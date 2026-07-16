@@ -18,7 +18,7 @@ const sendEmail = async (to, subject, html) => {
     try {
 
         await transporter.sendMail({
-            from: `LuckyOneMall <${process.env.SMTP_USER}>`,
+            from: `IOTFIY-AC-KIT <${process.env.SMTP_USER}>`,
             to,
             subject,
             html,

@@ -91,8 +91,9 @@ const registerUser = async (req, res) => {
 
         // Generate OTP
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
         user.otp = otp;
-        user.otpExpiry = Date.now() + 10 * 60 * 1000; // 10 minutes
+        user.otpExpiry = otpExpiresAt;
         await user.save();
 
         // Check & Link Pending Subscription
@@ -108,6 +109,8 @@ const registerUser = async (req, res) => {
             console.log(`Pending subscription linked for ${email}`);
         }
 
+        const verificationLink = `${process.env.FRONTEND_URL}/#/verify-otp?email=${encodeURIComponent(email)}&flow=register&expiresAt=${otpExpiresAt.getTime()}`;
+
         // Try to send OTP Email
         try {
             await sendEmail(
@@ -117,6 +120,11 @@ const registerUser = async (req, res) => {
                 <h2>Welcome to IotFiy AC-KIT!</h2>
                 <p>Hi <strong>${name}</strong>,</p>
                 <p>Your verification OTP is: <strong>${otp}</strong></p>
+                <p>Click the button below to open the verification page:</p>
+                <a href="${verificationLink}"
+                   style="display:inline-block; background:#4f46e5; color:white; padding:12px 24px; text-decoration:none; border-radius:8px; font-weight:700;">
+                   Verify Account
+                </a>
                 <p>This OTP will expire in 10 minutes.</p>
                 `
             );
@@ -142,7 +150,8 @@ const registerUser = async (req, res) => {
             success: true,
             message: "Registration successful. Please verify OTP sent to your email.",
             userId: user._id,
-            email: user.email
+            email: user.email,
+            otpExpiresAt
         });
 
     } catch (error) {
@@ -170,7 +179,7 @@ const registerUser = async (req, res) => {
     }
 };
 
-// Admin Creates Manager (Setup Password Flow)
+// Admin Creates Manager (OTP -> Setup Password Flow)
 const createUserByAdmin = async (req, res) => {
     let user = null;   // For rollback
 
@@ -185,8 +194,8 @@ const createUserByAdmin = async (req, res) => {
         }
 
         const setupToken = jwt.sign({ email }, process.env.JWT_SECRET, { expiresIn: "24h" });
-
-        console.log(setupToken)
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
         // Create user
         user = await User.create({
@@ -196,6 +205,8 @@ const createUserByAdmin = async (req, res) => {
             creatorId: admin._id,
             createdBy: "admin",
             setupToken,
+            otp,
+            otpExpiry: otpExpiresAt,
             isActive: false,
             isVerified: false
         });
@@ -211,23 +222,24 @@ const createUserByAdmin = async (req, res) => {
             console.log(`Pending subscription linked for admin-created user: ${email}`);
         }
 
-        const setupLink = `${process.env.FRONTEND_URL}/setup-password/${setupToken}`;
+        const verificationLink = `${process.env.FRONTEND_URL}/#/verify-otp?email=${encodeURIComponent(email)}&flow=invite&expiresAt=${otpExpiresAt.getTime()}`;
 
         // Send Email
         try {
             await sendEmail(
                 user.email,
-                "Set Your AC-KIT Account Password",
+                "Verify Your AC-KIT Manager Account",
                 `
                 <h2>Account Created Successfully</h2>
                 <p>Hello <strong>${name}</strong>,</p>
                 <p>Your account has been created by the administrator.</p>
-                <p>Please click the link below to set your password:</p>
-                <a href="${setupLink}" 
+                <p>Your verification OTP is: <strong>${otp}</strong></p>
+                <p>Please verify your email before creating your password:</p>
+                <a href="${verificationLink}" 
                    style="background:#0055a5; color:white; padding:12px 24px; text-decoration:none; border-radius:6px;">
-                   Set Password
+                   Verify Account
                 </a>
-                <p>This link will expire in 24 hours.</p>
+                <p>The OTP will expire in 10 minutes.</p>
                 `
             );
         } catch (emailError) {
@@ -235,13 +247,14 @@ const createUserByAdmin = async (req, res) => {
             await User.findByIdAndDelete(user._id);
             return res.status(500).json({
                 success: false,
-                message: "Failed to send setup email."
+                message: "Failed to send verification email."
             });
         }
 
         res.status(201).json({
             success: true,
-            message: "User created successfully. Setup link sent to email.",
+            message: "Manager created successfully. Verification OTP sent to email.",
+            otpExpiresAt,
             user: {
                 id: user._id,
                 name: user.name,
@@ -446,30 +459,15 @@ const setPassword = async (req, res) => {
         const hashedPassword = await bcrypt.hash(password, 10);
 
         user.password = hashedPassword;
-        user.setupToken = null;           // Clear setup token after use
-
-        // Generate OTP for next step (verification)
-        const otp = Math.floor(100000 + Math.random() * 900000).toString();
-        user.otp = otp;
-        user.otpExpiry = Date.now() + 10 * 60 * 1000; // 10 minutes
+        user.setupToken = null;
+        user.isVerified = true;
+        user.isActive = true;
 
         await user.save();
 
-        // Send OTP Email
-        await sendEmail(
-            user.email,
-            "Verify Your AC-KIT Account",
-            `
-            <h2>Password Set Successfully!</h2>
-            <p>Your account password has been set.</p>
-            <p>Your verification OTP is: <strong>${otp}</strong></p>
-            <p>This OTP will expire in 10 minutes.</p>
-            `
-        );
-
         res.status(200).json({
             success: true,
-            message: "Password set successfully. Please verify OTP sent to your email.",
+            message: "Password set successfully. You can now login.",
             email: user.email
         });
 
@@ -482,7 +480,7 @@ const setPassword = async (req, res) => {
 // Verify OTP
 const verifyOTP = async (req, res) => {
     try {
-        const { otp } = req.body;
+        const { otp, email } = req.body;
 
         if (!otp) {
             return res.status(400).json({
@@ -491,7 +489,9 @@ const verifyOTP = async (req, res) => {
             });
         }
 
-        const user = await User.findOne({ otp: otp });
+        const query = { otp: String(otp) };
+        if (email) query.email = email.toLowerCase().trim();
+        const user = await User.findOne(query);
 
         if (!user) {
             return res.status(400).json({
@@ -507,9 +507,12 @@ const verifyOTP = async (req, res) => {
             });
         }
 
-        // Verify and Activate User
+        const requiresPasswordSetup = user.createdBy === "admin" && !user.password;
+
+        // Admin-created managers create their password after OTP verification.
+        // Self-registered managers can be activated immediately.
         user.isVerified = true;
-        user.isActive = true
+        user.isActive = !requiresPasswordSetup;
         user.otp = null;
         user.otpExpiry = null;
 
@@ -517,7 +520,11 @@ const verifyOTP = async (req, res) => {
 
         res.status(200).json({
             success: true,
-            message: "Account verified successfully. You can now login.",
+            message: requiresPasswordSetup
+                ? "Email verified successfully. Please create your password."
+                : "Account verified successfully. You can now login.",
+            requiresPasswordSetup,
+            setupToken: requiresPasswordSetup ? user.setupToken : undefined,
             user: {
                 id: user._id,
                 name: user.name,
@@ -560,12 +567,25 @@ const resendOTP = async (req, res) => {
             });
         }
 
+        if (user.otpExpiry && user.otpExpiry.getTime() > Date.now()) {
+            return res.status(429).json({
+                success: false,
+                message: "The current OTP is still valid",
+                otpExpiresAt: user.otpExpiry,
+                retryAfterSeconds: Math.ceil((user.otpExpiry.getTime() - Date.now()) / 1000)
+            });
+        }
+
         // Generate new OTP
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
         user.otp = otp;
-        user.otpExpiry = Date.now() + 10 * 60 * 1000; // 10 minutes
+        user.otpExpiry = otpExpiresAt;
 
         await user.save();
+
+        const flow = user.createdBy === "admin" ? "invite" : "register";
+        const verificationLink = `${process.env.FRONTEND_URL}/#/verify-otp?email=${encodeURIComponent(user.email)}&flow=${flow}&expiresAt=${otpExpiresAt.getTime()}`;
 
         // Send new OTP Email
         await sendEmail(
@@ -575,6 +595,7 @@ const resendOTP = async (req, res) => {
             <h2>New Verification OTP</h2>
             <p>Hello ${user.name},</p>
             <p>Your new OTP is: <strong>${otp}</strong></p>
+            <p><a href="${verificationLink}" style="display:inline-block; background:#4f46e5; color:white; padding:12px 24px; text-decoration:none; border-radius:8px; font-weight:700;">Verify Account</a></p>
             <p>This OTP will expire in 10 minutes.</p>
             <p>If you didn't request this, please ignore this email.</p>
             `
@@ -585,7 +606,8 @@ const resendOTP = async (req, res) => {
         res.status(200).json({
             success: true,
             message: "New OTP has been sent to your email",
-            email: user.email
+            email: user.email,
+            otpExpiresAt
         });
 
     } catch (error) {
@@ -684,7 +706,7 @@ const forgotPassword = async (req, res) => {
         user.resetTokenExpiry = Date.now() + 15 * 60 * 1000; // 15 minutes
         await user.save();
 
-        const resetLink = `${process.env.FRONTEND_URL}/reset-password/${resetToken}`;
+        const resetLink = `${process.env.FRONTEND_URL}/#/reset-password/${resetToken}`;
 
         await sendEmail(
             user.email,
