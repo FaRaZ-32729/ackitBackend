@@ -12,7 +12,6 @@ const createVenueSchema = z.object({
 
 const updateVenueSchema = z.object({
     name: z.string().min(2).max(100).optional(),
-    description: z.string().max(500).optional(),
     organization: z.string().regex(/^[0-9a-fA-F]{24}$/, "Invalid Organization ID").optional()
 });
 

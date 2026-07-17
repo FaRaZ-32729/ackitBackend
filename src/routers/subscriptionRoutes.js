@@ -10,7 +10,7 @@ router.get("/get-plan/:id", getPlanById);
 
 // Protected
 router.post("/purchase", authenticate, purchaseSubscription);
-router.get("/my-subscription", getMySubscription);
+router.get("/my-subscription", authenticate, getMySubscription);
 
 router.get("/usage", authenticate, getSubscriptionUsage);
 router.post("/create-plan", authenticate, createSubscriptionPlan);

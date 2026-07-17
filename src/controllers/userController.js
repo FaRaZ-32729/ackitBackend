@@ -76,10 +76,6 @@ const getUsersByManager = async (req, res) => {
             .populate("venues.venueId", "name")
             .sort({ createdAt: -1 });
 
-        if (subUsers.length === 0) {
-            return res.status(404).json({ message: "No users found under this manager" })
-        }
-
         return res.status(200).json({
             success: true,
             manager: {
@@ -208,25 +204,31 @@ const updateManagerCreatedUser = async (req, res) => {
 
         // ================= VALIDATE VENUES =================
 
-        if (venues && venues.length > 0) {
+        if (Array.isArray(venues)) {
+            if (venues.length === 0) {
+                user.venues = [];
+            } else {
+                const orgIds = (organizations && organizations.length > 0)
+                    ? organizations
+                    : user.organizations;
 
-            const validVenues = await Venue.find({
-                _id: { $in: venues },
-                organization: { $in: user.organizations }
-            });
-
-            if (validVenues.length !== venues.length) {
-                return res.status(403).json({
-                    success: false,
-                    message: "One or more venues are invalid"
+                const validVenues = await Venue.find({
+                    _id: { $in: venues },
+                    organization: { $in: orgIds }
                 });
-            }
 
-            // user.venues = venues;
-            user.venues = validVenues.map(v => ({
-                venueId: v._id,
-                venueName: v.name
-            }));
+                if (validVenues.length !== venues.length) {
+                    return res.status(403).json({
+                        success: false,
+                        message: "One or more venues are invalid"
+                    });
+                }
+
+                user.venues = validVenues.map(v => ({
+                    venueId: v._id,
+                    venueName: v.name
+                }));
+            }
         }
 
         // ================= VALIDATE PERMISSION =================

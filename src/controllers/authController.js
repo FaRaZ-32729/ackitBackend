@@ -660,7 +660,8 @@ const loginUser = async (req, res) => {
                 email: user.email,
                 role: user.role,
                 isActive: user.isActive,
-                permission: user.permission || null
+                permission: user.permission || null,
+                currentSubscription: user.currentSubscription || null
             }
         });
     } catch (error) {

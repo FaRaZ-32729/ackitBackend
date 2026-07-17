@@ -23,7 +23,8 @@ const createVenue = async (req, res) => {
 
         // Check ownership (Admin can create anywhere, Manager only in their orgs)
         if (user.role !== "admin") {
-            if (!user.organizations.includes(validatedData.organization)) {
+            const userOrgIds = (user.organizations || []).map((id) => id.toString());
+            if (!userOrgIds.includes(validatedData.organization)) {
                 return res.status(403).json({
                     success: false,
                     message: "You can only create venues in your own organizations"
@@ -53,9 +54,7 @@ const createVenue = async (req, res) => {
         // Create Venue
         const venue = await Venue.create({
             name: validatedData.name,
-            description: validatedData.description,
             organization: validatedData.organization,
-            createdBy: user._id
         });
 
         // await User.findByIdAndUpdate(user._id, {
@@ -94,10 +93,6 @@ const getAllVenues = async (req, res) => {
             .populate("organization", "name")
             .sort({ createdAt: -1 });
 
-        if (venues.length === 0) {
-            return res.status(404).json({ message: "Venues not found" })
-        }
-
         return res.status(200).json({
             success: true,
             count: venues.length,
@@ -115,10 +110,6 @@ const getVenuesByOrganization = async (req, res) => {
 
         const venues = await Venue.find({ organization: organizationId })
             .populate("organization", "name");
-
-        if (venues.length === 0) {
-            return res.status(404).json({ message: "No venue found under this organization" })
-        }
 
         return res.status(200).json({
             success: true,
@@ -207,7 +198,6 @@ const updateVenue = async (req, res) => {
 
         // ==================== UPDATE FIELDS ====================
         if (validatedData.name) venue.name = validatedData.name;
-        if (validatedData.description !== undefined) venue.description = validatedData.description;
         if (validatedData.organization) venue.organization = validatedData.organization;
 
         await venue.save();

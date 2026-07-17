@@ -1,6 +1,6 @@
 // src/controllers/organizationController.js
 const Organization = require("../models/organizationModel");
-const { createOrganizationSchema } = require("../validations/organizationValidation");
+const { createOrganizationSchema, updateOrganizationSchema } = require("../validations/organizationValidation");
 const checkSubscriptionLimit = require("../middlewares/subscriptionLimit");
 const User = require("../models/userModel");
 const Venue = require("../models/venueModel");
@@ -34,6 +34,7 @@ const createOrganization = async (req, res) => {
         // Create Organization
         const organization = await Organization.create({
             name: validatedData.name,
+            address: validatedData.address,
             owner: user._id,
         });
 
@@ -166,7 +167,7 @@ const getUserOrganizations = async (req, res) => {
         const user = await User.findById(userId)
             .populate({
                 path: "organizations",
-                select: "name description createdAt",
+                select: "name address createdAt",
                 // populate: {
                 //     path: "owner",
                 //     select: "name email"
@@ -198,15 +199,9 @@ const getUserOrganizations = async (req, res) => {
 const updateOrganization = async (req, res) => {
     try {
         const { id } = req.params;
-        const { name } = req.body;   // Only allowing name change
+        const validatedData = updateOrganizationSchema.parse(req.body);
+        const { name, address } = validatedData;
         const user = req.user;
-
-        if (!name || name.trim() === "") {
-            return res.status(400).json({
-                success: false,
-                message: "Organization name is required"
-            });
-        }
 
         // Find organization
         const organization = await Organization.findById(id);
@@ -225,43 +220,54 @@ const updateOrganization = async (req, res) => {
             });
         }
 
-        // Check if new name is same as old name
-        if (name.trim().toLowerCase() === organization.name.toLowerCase()) {
-            return res.status(400).json({
-                success: false,
-                message: "New name is same as current name"
+        const nameChanged = name.trim().toLowerCase() !== organization.name.toLowerCase();
+
+        if (nameChanged) {
+            // Check duplicate name for this owner
+            const existingOrg = await Organization.findOne({
+                name: { $regex: new RegExp(`^${name}$`, 'i') },
+                owner: organization.owner,
+                _id: { $ne: id }
             });
+
+            if (existingOrg) {
+                return res.status(400).json({
+                    success: false,
+                    message: "You already have an organization with this name"
+                });
+            }
+
+            organization.name = name.trim();
         }
 
-        // Check duplicate name for this owner
-        const existingOrg = await Organization.findOne({
-            name: { $regex: new RegExp(`^${name}$`, 'i') },
-            owner: organization.owner,
-            _id: { $ne: id }
-        });
-
-        if (existingOrg) {
-            return res.status(400).json({
-                success: false,
-                message: "You already have an organization with this name"
-            });
+        if (address !== undefined) {
+            organization.address = address || null;
         }
 
-        // Update name
-        organization.name = name.trim();
         await organization.save();
 
         res.status(200).json({
             success: true,
-            message: "Organization name updated successfully",
+            message: "Organization updated successfully",
             organization: {
                 id: organization._id,
                 name: organization.name,
+                address: organization.address,
                 owner: organization.owner
             }
         });
 
     } catch (error) {
+        if (error.name === "ZodError") {
+            return res.status(400).json({
+                success: false,
+                errors: error.issues.map(err => ({
+                    field: err.path[0],
+                    message: err.message
+                }))
+            });
+        }
+
         console.error("Update Organization Error:", error);
         res.status(500).json({
             success: false,
@@ -328,4 +334,4 @@ const deleteOrganization = async (req, res) => {
     }
 };
 
-module.exports = { createOrganization, getAllOrganizations, getOrganizationsByOwner, getOrganizationById, getUserOrganizations, deleteOrganization };
+module.exports = { createOrganization, getAllOrganizations, getOrganizationsByOwner, getOrganizationById, getUserOrganizations, updateOrganization, deleteOrganization };

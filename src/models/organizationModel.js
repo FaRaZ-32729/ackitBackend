@@ -8,6 +8,12 @@ const organizationSchema = new mongoose.Schema({
         unique: true
     },
 
+    address: {
+        type: String,
+        trim: true,
+        default: null,
+    },
+
     // Current owner/manager
     owner: {
         type: mongoose.Schema.Types.ObjectId,
