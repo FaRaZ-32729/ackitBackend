@@ -1,6 +1,6 @@
 const express = require("express");
 const { getAllPlans, getPlanById, createSubscriptionPlan } = require("../controllers/subscriptionPlanController");
-const { purchaseSubscription, getMySubscription, getSubscriptionUsage } = require("../controllers/SubscriptionController");
+const { purchaseSubscription, getMySubscription, getSubscriptionUsage } = require("../controllers/subscriptionController");
 const authenticate = require("../middlewares/auth");
 const router = express.Router();
 
