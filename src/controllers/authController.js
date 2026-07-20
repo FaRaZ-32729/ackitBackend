@@ -349,7 +349,11 @@ const createSubUser = async (req, res) => {
             }));
         }
 
-        // Create user
+        // Create user (OTP first, then password setup)
+        const setupToken = jwt.sign({ email }, process.env.JWT_SECRET, { expiresIn: "24h" });
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        const otpExpiresAt = new Date(Date.now() + 10 * 60 * 1000);
+
         newUser = await User.create({
             name: validatedData.name,
             email: email,
@@ -359,31 +363,45 @@ const createSubUser = async (req, res) => {
             organizations: validatedData.organizations,
             venues: assignedVenues,
             permission: validatedData.permission,
+            setupToken,
+            otp,
+            otpExpiry: otpExpiresAt,
             isActive: false,
             isVerified: false
         });
 
-        // Send setup email
-        const setupToken = jwt.sign({ email: newUser.email }, process.env.JWT_SECRET, { expiresIn: "24h" });
-        newUser.setupToken = setupToken;
-        await newUser.save();
+        const verificationLink = `${process.env.FRONTEND_URL}/#/verify-otp?email=${encodeURIComponent(email)}&flow=invite&expiresAt=${otpExpiresAt.getTime()}`;
 
-        const setupLink = `${process.env.FRONTEND_URL}/#/setup-password/${setupToken}`;
-
-        await sendEmail(
-            newUser.email,
-            "Your Account Has Been Created",
-            `
-            <h2>Account Created</h2>
-            <p>Hello ${newUser.name},</p>
-            <p>Your account has been created by ${manager.name}.</p>
-            <a href="${setupLink}">Set Your Password</a>
-            `
-        );
+        try {
+            await sendEmail(
+                newUser.email,
+                "Verify Your AC-KIT Account",
+                `
+                <h2>Account Created</h2>
+                <p>Hello <strong>${newUser.name}</strong>,</p>
+                <p>Your account has been created by ${manager.name}.</p>
+                <p>Your verification OTP is: <strong>${otp}</strong></p>
+                <p>Please verify your email before creating your password:</p>
+                <a href="${verificationLink}"
+                   style="display:inline-block; background:#4f46e5; color:white; padding:12px 24px; text-decoration:none; border-radius:8px; font-weight:700;">
+                   Verify Account
+                </a>
+                <p>The OTP will expire in 10 minutes.</p>
+                `
+            );
+        } catch (emailError) {
+            console.error("Email sending failed:", emailError.message);
+            await User.findByIdAndDelete(newUser._id);
+            return res.status(500).json({
+                success: false,
+                message: "Failed to send verification email."
+            });
+        }
 
         res.status(201).json({
             success: true,
-            message: "Sub-user created successfully. Setup link sent.",
+            message: "Sub-user created successfully. Verification OTP sent to email.",
+            otpExpiresAt,
             user: {
                 id: newUser._id,
                 name: newUser.name,
@@ -507,14 +525,24 @@ const verifyOTP = async (req, res) => {
             });
         }
 
-        const requiresPasswordSetup = user.createdBy === "admin" && !user.password;
+        const requiresPasswordSetup =
+            (user.createdBy === "admin" || user.createdBy === "manager") && !user.password;
 
-        // Admin-created managers create their password after OTP verification.
+        // Invited users (admin/manager created) set password after OTP verification.
         // Self-registered managers can be activated immediately.
         user.isVerified = true;
         user.isActive = !requiresPasswordSetup;
         user.otp = null;
         user.otpExpiry = null;
+
+        // Ensure a setup token exists before sending user to password page
+        if (requiresPasswordSetup && !user.setupToken) {
+            user.setupToken = jwt.sign(
+                { email: user.email },
+                process.env.JWT_SECRET,
+                { expiresIn: "24h" }
+            );
+        }
 
         await user.save();
 
@@ -584,7 +612,7 @@ const resendOTP = async (req, res) => {
 
         await user.save();
 
-        const flow = user.createdBy === "admin" ? "invite" : "register";
+        const flow = user.createdBy === "admin" || user.createdBy === "manager" ? "invite" : "register";
         const verificationLink = `${process.env.FRONTEND_URL}/#/verify-otp?email=${encodeURIComponent(user.email)}&flow=${flow}&expiresAt=${otpExpiresAt.getTime()}`;
 
         // Send new OTP Email
