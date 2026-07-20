@@ -368,7 +368,7 @@ const createSubUser = async (req, res) => {
         newUser.setupToken = setupToken;
         await newUser.save();
 
-        const setupLink = `${process.env.FRONTEND_URL}/setup-password/${setupToken}`;
+        const setupLink = `${process.env.FRONTEND_URL}/#/setup-password/${setupToken}`;
 
         await sendEmail(
             newUser.email,
