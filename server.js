@@ -20,7 +20,7 @@ const server = http.createServer(app);
 
 // Middlewares
 const allowedOrigins = [
-    "https://iotfiy-ackit.vercel.app",
+    "https://ackit.vercel.app",
     "http://localhost:5173",
     "http://localhost:3000"
 ];
