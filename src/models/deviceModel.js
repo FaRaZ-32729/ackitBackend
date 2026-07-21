@@ -1,23 +1,74 @@
 // models/deviceModel.js
 const mongoose = require("mongoose");
 
+const deviceSchema = new mongoose.Schema(
+    {
+        deviceId: {
+            type: String,
+            required: true,
+            unique: true,
+            uppercase: true,
+            trim: true,
+            minlength: 6,
+            maxlength: 6,
+        },
+        deviceName: { type: String, required: true, trim: true },
+        organization: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "Organization",
+            required: true,
+        },
+        venue: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "Venue",
+            required: true,
+        },
+        brand: {
+            type: mongoose.Schema.Types.ObjectId,
+            ref: "Brand",
+            required: true,
+        },
+        capacity: {
+            type: Number,
+            enum: [1, 1.5, 2, 2.5, 3, 3.5],
+            required: true,
+        },
+        status: {
+            type: String,
+            enum: ["online", "offline"],
+            default: "offline",
+        },
+        state: {
+            type: String,
+            enum: ["on", "off"],
+            default: "off",
+        },
+        health: {
+            type: String,
+            enum: ["healthy", "faulty"],
+            default: "healthy",
+        },
+        version: { type: String, default: "0.0.0" },
+        remote: {
+            type: String,
+            enum: ["lock", "unlock", "superlock"],
+            default: "unlock",
+        },
+        apikey: { type: String, default: "" },
+        temperature: {
+            type: Number,
+            min: 16,
+            max: 30,
+            default: 16,
+        },
+        powerConsumption: { type: Number, default: 0 },
+    },
+    { timestamps: true }
+);
 
-const deviceSchema = new mongoose.Schema({
-    deviceId: { type: String, required: true, unique: true, trim: true },
-    deviceName: { type: String, required: true, trim: true },
-    status: { type: String, enum: ["online", "offline"], trim: true, default: "offline" },
-    state:{type:String, enum:["on","off"], trim: true, default: "off"},
-    brand:{type:mongoose.Schema.Types.ObjectId, ref:"Brand", required:true},
-    capacity:{type:Number, required:true},
-    version:{type:String, default:"0.0.0"},
-    remote:{type:String, enum:["lock","unlock", "superlock" ], trim: true, default: "unlock"},
-    apikey:{type:String},
-    venue:{type:mongoose.Schema.Types.ObjectId, ref:"Venue", required:true},
-    temprature:{type:Number, enum:["16","17","18","19","20","21","22","23","24","25","26","27","28","29","30"], default:0},
-    powerConsumption:{type:Number, default:0},
-}, { timestamps: true });
+deviceSchema.index({ organization: 1 });
+deviceSchema.index({ venue: 1 });
+// Device name must be unique within the same venue (but may repeat across venues)
+deviceSchema.index({ venue: 1, deviceName: 1 }, { unique: true });
 
-
-
-const Device = mongoose.model("Device", deviceSchema);
-module.exports = Device;
+module.exports = mongoose.model("Device", deviceSchema);
