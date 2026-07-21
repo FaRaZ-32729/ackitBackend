@@ -9,6 +9,7 @@ const organizationRoutes = require("./organizationRoutes")
 const venueRoutes = require("./venueRoutes")
 const userRoutes = require("./userRoutes")
 const adminDashboardRoutes = require("./adminDashboardRoutes");
+const brandRoutes = require("./brandRoutes");
 const authenticate = require("../middlewares/auth");
 
 // Mount all routes with proper prefixes
@@ -18,6 +19,7 @@ router.use("/organization", organizationRoutes);
 router.use("/venue", venueRoutes);
 router.use("/user", userRoutes);
 router.use("/dashboard", authenticate, adminDashboardRoutes);
+router.use("/brand", brandRoutes);
 
 // Health check route
 router.get("/health", (req, res) => {
