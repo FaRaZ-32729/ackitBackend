@@ -62,6 +62,10 @@ const deviceSchema = new mongoose.Schema(
             default: 16,
         },
         powerConsumption: { type: Number, default: 0 },
+        configure: {
+            type: Boolean,
+            default: false,
+        },
     },
     { timestamps: true }
 );

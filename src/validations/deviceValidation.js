@@ -22,4 +22,6 @@ const createDeviceSchema = z.object({
         ),
 });
 
-module.exports = { createDeviceSchema };
+const updateDeviceSchema = createDeviceSchema;
+
+module.exports = { createDeviceSchema, updateDeviceSchema };
