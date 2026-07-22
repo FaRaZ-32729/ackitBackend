@@ -7,6 +7,8 @@ const {
     getDevicesByVenue,
     updateDevice,
     deleteDevice,
+    setDevicePower,
+    setDeviceTemperature,
 } = require("../controllers/deviceController");
 
 const router = express.Router();
@@ -24,6 +26,18 @@ router.put(
     authenticate,
     checkManagePermission(),
     updateDevice
+);
+router.post(
+    "/power/:id",
+    authenticate,
+    checkManagePermission(),
+    setDevicePower
+);
+router.post(
+    "/temperature/:id",
+    authenticate,
+    checkManagePermission(),
+    setDeviceTemperature
 );
 router.delete(
     "/delete/:id",

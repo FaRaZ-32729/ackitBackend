@@ -313,6 +313,15 @@ function signalsToDottedCommands(signals = {}) {
     return commands;
 }
 
+/**
+ * Flatten a Brand mongoose document into dotted IR command keys
+ * (only non-empty values): power.on, temp.24, mode.cool, fan.low, ...
+ */
+function brandDocumentToCommandsMap(brand) {
+    if (!brand) return {};
+    return signalsToDottedCommands(toFrontendSignals(brand));
+}
+
 module.exports = {
     TEMP_WORD_BY_C,
     TEMP_C_BY_WORD,
@@ -326,4 +335,5 @@ module.exports = {
     buildSchemaCommandsFromNested,
     resolveSaveCommands,
     signalsToDottedCommands,
+    brandDocumentToCommandsMap,
 };

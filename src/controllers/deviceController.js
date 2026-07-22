@@ -6,7 +6,11 @@ const checkSubscriptionLimit = require("../middlewares/subscriptionLimit");
 const {
     createDeviceSchema,
     updateDeviceSchema,
+    setDevicePowerSchema,
+    setDeviceTemperatureSchema,
 } = require("../validations/deviceValidation");
+const { publishDeviceApplyCommand } = require("../mqtt/mqttConfig");
+const { brandDocumentToCommandsMap } = require("../utils/brandCommandMap");
 
 const DEVICE_ID_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
@@ -451,10 +455,182 @@ const deleteDevice = async (req, res) => {
     }
 };
 
+// POST /api/device/power/:id  body: { state: "on" | "off" }
+const setDevicePower = async (req, res) => {
+    try {
+        const { id } = req.params;
+        if (!id || !/^[0-9a-fA-F]{24}$/.test(id)) {
+            return res.status(400).json({
+                success: false,
+                message: "Valid device id is required",
+            });
+        }
+
+        const data = setDevicePowerSchema.parse(req.body);
+        const device = await Device.findById(id).populate("brand");
+        if (!device) {
+            return res.status(404).json({
+                success: false,
+                message: "Device not found",
+            });
+        }
+
+        const organization = await Organization.findById(device.organization);
+        if (organization && !hasOrganizationAccess(req.user, organization)) {
+            return res.status(403).json({
+                success: false,
+                message: "You cannot control this device",
+            });
+        }
+        if (!hasVenueAccess(req.user, device.venue)) {
+            return res.status(403).json({
+                success: false,
+                message: "You cannot control this device",
+            });
+        }
+
+        if (device.status !== "online") {
+            return res.status(409).json({
+                success: false,
+                message: "Device is offline. Turn it on before sending power commands.",
+            });
+        }
+
+        const commandKey = data.state === "on" ? "power.on" : "power.off";
+        const published = publishDeviceApplyCommand(device.deviceId, {
+            key: commandKey,
+            state: data.state,
+        });
+
+        if (!published) {
+            return res.status(503).json({
+                success: false,
+                message: "MQTT broker unavailable. Could not reach the device.",
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            message: `Power ${data.state} command sent to device`,
+            deviceId: device.deviceId,
+            requestedState: data.state,
+            // Actual Mongo state updates when ESP reports back via MQTT
+            currentState: device.state,
+        });
+    } catch (error) {
+        if (error.name === "ZodError") {
+            return res.status(400).json({
+                success: false,
+                message: "Validation failed",
+                errors: error.issues.map((issue) => ({
+                    field: issue.path.join("."),
+                    message: issue.message,
+                })),
+            });
+        }
+        console.error("Set Device Power Error:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Server error while controlling device power",
+        });
+    }
+};
+
+// POST /api/device/temperature/:id  body: { temperature: 16..30 }
+const setDeviceTemperature = async (req, res) => {
+    try {
+        const { id } = req.params;
+        if (!id || !/^[0-9a-fA-F]{24}$/.test(id)) {
+            return res.status(400).json({
+                success: false,
+                message: "Valid device id is required",
+            });
+        }
+
+        const data = setDeviceTemperatureSchema.parse(req.body);
+        const device = await Device.findById(id).populate("brand");
+        if (!device) {
+            return res.status(404).json({
+                success: false,
+                message: "Device not found",
+            });
+        }
+
+        const organization = await Organization.findById(device.organization);
+        if (organization && !hasOrganizationAccess(req.user, organization)) {
+            return res.status(403).json({
+                success: false,
+                message: "You cannot control this device",
+            });
+        }
+        if (!hasVenueAccess(req.user, device.venue)) {
+            return res.status(403).json({
+                success: false,
+                message: "You cannot control this device",
+            });
+        }
+
+        if (device.status !== "online") {
+            return res.status(409).json({
+                success: false,
+                message: "Device is offline. Connect it before setting temperature.",
+            });
+        }
+
+        const commandKey = `temp.${data.temperature}`;
+        const brandCommands = brandDocumentToCommandsMap(device.brand);
+        if (!brandCommands[commandKey]) {
+            return res.status(400).json({
+                success: false,
+                message: `No IR command saved for ${commandKey} on this device's brand`,
+            });
+        }
+
+        const published = publishDeviceApplyCommand(device.deviceId, {
+            key: commandKey,
+            state: device.state === "on" ? "on" : "off",
+            temperature: data.temperature,
+        });
+
+        if (!published) {
+            return res.status(503).json({
+                success: false,
+                message: "MQTT broker unavailable. Could not reach the device.",
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            message: `Temperature ${data.temperature}°C command sent to device`,
+            deviceId: device.deviceId,
+            requestedTemperature: data.temperature,
+            currentTemperature: device.temperature,
+        });
+    } catch (error) {
+        if (error.name === "ZodError") {
+            return res.status(400).json({
+                success: false,
+                message: "Validation failed",
+                errors: error.issues.map((issue) => ({
+                    field: issue.path.join("."),
+                    message: issue.message,
+                })),
+            });
+        }
+        console.error("Set Device Temperature Error:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Server error while controlling device temperature",
+        });
+    }
+};
+
 module.exports = {
     createDevice,
     getDeviceBrandOptions,
     getDevicesByVenue,
     updateDevice,
     deleteDevice,
+    setDevicePower,
+    setDeviceTemperature,
 };

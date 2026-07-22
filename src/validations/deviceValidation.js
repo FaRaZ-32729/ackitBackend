@@ -24,4 +24,27 @@ const createDeviceSchema = z.object({
 
 const updateDeviceSchema = createDeviceSchema;
 
-module.exports = { createDeviceSchema, updateDeviceSchema };
+const setDevicePowerSchema = z.object({
+    state: z.enum(["on", "off"], {
+        required_error: "state is required",
+        invalid_type_error: "state must be on or off",
+    }),
+});
+
+const setDeviceTemperatureSchema = z.object({
+    temperature: z.coerce
+        .number({
+            required_error: "temperature is required",
+            invalid_type_error: "temperature must be a number",
+        })
+        .int("temperature must be a whole number")
+        .min(16, "temperature must be at least 16")
+        .max(30, "temperature must be at most 30"),
+});
+
+module.exports = {
+    createDeviceSchema,
+    updateDeviceSchema,
+    setDevicePowerSchema,
+    setDeviceTemperatureSchema,
+};
