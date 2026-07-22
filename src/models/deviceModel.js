@@ -54,6 +54,7 @@ const deviceSchema = new mongoose.Schema(
             enum: ["lock", "unlock", "superlock"],
             default: "unlock",
         },
+        // Stored as lowercase `apikey` (not unique — deviceId already is)
         apikey: { type: String, default: "" },
         temperature: {
             type: Number,
@@ -75,4 +76,36 @@ deviceSchema.index({ venue: 1 });
 // Device name must be unique within the same venue (but may repeat across venues)
 deviceSchema.index({ venue: 1, deviceName: 1 }, { unique: true });
 
-module.exports = mongoose.model("Device", deviceSchema);
+const Device = mongoose.model("Device", deviceSchema);
+
+/**
+ * Drop legacy indexes that break inserts.
+ * Old unique index `apiKey_1` treated missing camelCase field as null,
+ * so only one device could exist (second insert → E11000 apiKey: null).
+ */
+async function cleanupStaleDeviceIndexes() {
+    try {
+        const indexes = await Device.collection.indexes();
+        const stale = indexes.filter(
+            (idx) =>
+                idx.name === "apiKey_1" ||
+                (idx.key && idx.key.apiKey != null && idx.unique)
+        );
+
+        for (const idx of stale) {
+            await Device.collection.dropIndex(idx.name);
+            console.log(`[Device] dropped stale index: ${idx.name}`);
+        }
+    } catch (error) {
+        // Ignore "index not found"
+        if (error?.codeName !== "IndexNotFound" && error?.code !== 27) {
+            console.warn(
+                "[Device] stale index cleanup skipped:",
+                error.message
+            );
+        }
+    }
+}
+
+module.exports = Device;
+module.exports.cleanupStaleDeviceIndexes = cleanupStaleDeviceIndexes;

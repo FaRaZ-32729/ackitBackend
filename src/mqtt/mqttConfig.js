@@ -270,6 +270,15 @@ async function handleDeviceStatusMessage(deviceId, payload) {
         if (nextStatus === "online" && device.configure === false) {
             publishBrandCommandsToDevice(device);
         }
+
+        // Keep ESP lock mode + desired dashboard state in sync after reconnect
+        if (nextStatus === "online") {
+            publishDeviceRemoteMode(device.deviceId, {
+                remote: device.remote || "unlock",
+                state: device.state,
+                temperature: device.temperature,
+            });
+        }
     } catch (error) {
         console.error(
             `[MQTT] failed to update device ${normalizedId}:`,
@@ -365,6 +374,43 @@ function publishDeviceApplyCommand(deviceId, { key, state, temperature }) {
     mqttClient.publish(topic, payload);
     console.log(
         `[MQTT] apply -> ${topic} key=${key} state=${state || "-"} temp=${
+            temperature == null ? "-" : temperature
+        }`
+    );
+    return true;
+}
+
+/**
+ * Sync lock mode + dashboard desired state/temp to the ESP.
+ * Topic: ackit/device/{deviceId}/control  action=set_remote
+ */
+function publishDeviceRemoteMode(deviceId, { remote, state, temperature }) {
+    const mqttClient = getMqttClient();
+    if (!mqttClient?.connected) return false;
+
+    const normalizedId = String(deviceId || "")
+        .trim()
+        .toUpperCase();
+    if (!/^[A-Z0-9]{6}$/.test(normalizedId)) return false;
+
+    const mode = ["unlock", "lock", "superlock"].includes(remote)
+        ? remote
+        : "unlock";
+
+    const topic = `ackit/device/${normalizedId}/control`;
+    const payload = JSON.stringify({
+        action: "set_remote",
+        remote: mode,
+        state: state === "on" || state === "off" ? state : null,
+        temperature:
+            temperature == null || Number.isNaN(Number(temperature))
+                ? null
+                : Number(temperature),
+    });
+
+    mqttClient.publish(topic, payload);
+    console.log(
+        `[MQTT] set_remote -> ${topic} remote=${mode} state=${state || "-"} temp=${
             temperature == null ? "-" : temperature
         }`
     );
@@ -592,4 +638,5 @@ module.exports = {
     publishBrandCommand,
     publishBrandCommandsToDevice,
     publishDeviceApplyCommand,
+    publishDeviceRemoteMode,
 };

@@ -9,6 +9,7 @@ const {
     deleteDevice,
     setDevicePower,
     setDeviceTemperature,
+    setDeviceRemote,
 } = require("../controllers/deviceController");
 
 const router = express.Router();
@@ -38,6 +39,12 @@ router.post(
     authenticate,
     checkManagePermission(),
     setDeviceTemperature
+);
+router.put(
+    "/remote/:id",
+    authenticate,
+    checkManagePermission(),
+    setDeviceRemote
 );
 router.delete(
     "/delete/:id",

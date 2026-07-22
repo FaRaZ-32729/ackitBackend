@@ -8,8 +8,12 @@ const {
     updateDeviceSchema,
     setDevicePowerSchema,
     setDeviceTemperatureSchema,
+    setDeviceRemoteSchema,
 } = require("../validations/deviceValidation");
-const { publishDeviceApplyCommand } = require("../mqtt/mqttConfig");
+const {
+    publishDeviceApplyCommand,
+    publishDeviceRemoteMode,
+} = require("../mqtt/mqttConfig");
 const { brandDocumentToCommandsMap } = require("../utils/brandCommandMap");
 
 const DEVICE_ID_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
@@ -119,18 +123,83 @@ const createDevice = async (req, res) => {
             if (res.headersSent) return;
         }
 
-        const deviceId = await generateUniqueDeviceId();
-        const apikey = Buffer.from(deviceId, "utf8").toString("base64");
+        let device = null;
+        let lastDuplicateError = null;
 
-        const device = await Device.create({
-            deviceId,
-            apikey,
-            deviceName: data.name,
-            organization: organization._id,
-            venue: venue._id,
-            brand: brand._id,
-            capacity: data.capacity,
-        });
+        // Retry if a rare deviceId collision happens at insert time
+        for (let attempt = 0; attempt < 5; attempt += 1) {
+            const deviceId = await generateUniqueDeviceId();
+            const apikey = Buffer.from(deviceId, "utf8").toString("base64");
+
+            try {
+                device = await Device.create({
+                    deviceId,
+                    apikey,
+                    deviceName: data.name.trim(),
+                    organization: organization._id,
+                    venue: venue._id,
+                    brand: brand._id,
+                    capacity: data.capacity,
+                });
+                break;
+            } catch (createError) {
+                if (createError.code !== 11000) throw createError;
+
+                lastDuplicateError = createError;
+                const keyPattern = createError.keyPattern || {};
+                const keyValue = createError.keyValue || {};
+                const msg = String(createError.message || "");
+
+                const isNameConflict =
+                    keyPattern.deviceName != null ||
+                    keyValue.deviceName != null ||
+                    msg.includes("deviceName");
+
+                const isStaleApiKeyIndex =
+                    keyPattern.apiKey != null ||
+                    msg.includes("apiKey_1") ||
+                    msg.includes("apiKey:");
+
+                if (isNameConflict) {
+                    return res.status(409).json({
+                        success: false,
+                        message:
+                            "A device with this name already exists in this venue. Please use a different name.",
+                    });
+                }
+
+                if (isStaleApiKeyIndex) {
+                    // Should be removed on DB connect; don't burn retries on null apiKey
+                    console.error(
+                        "[device/create] stale apiKey unique index still present. Restart backend after index cleanup."
+                    );
+                    return res.status(409).json({
+                        success: false,
+                        message:
+                            "Database index conflict on apiKey. Restart the backend and try again.",
+                    });
+                }
+
+                // deviceId (or other) collision — try another id
+                console.warn(
+                    "[device/create] duplicate key, retrying:",
+                    keyPattern,
+                    keyValue
+                );
+            }
+        }
+
+        if (!device) {
+            console.error(
+                "[device/create] failed after retries:",
+                lastDuplicateError?.message
+            );
+            return res.status(409).json({
+                success: false,
+                message:
+                    "Could not create device due to a conflict. Please try a different name, or try again.",
+            });
+        }
 
         await device.populate([
             { path: "organization", select: "name" },
@@ -145,6 +214,12 @@ const createDevice = async (req, res) => {
         });
     } catch (error) {
         if (error.name === "ZodError") {
+            console.warn(
+                "[device/create] validation failed:",
+                error.issues,
+                "body=",
+                req.body
+            );
             return res.status(400).json({
                 success: false,
                 message: "Validation failed",
@@ -155,15 +230,26 @@ const createDevice = async (req, res) => {
             });
         }
         if (error.code === 11000) {
-            if (error.keyPattern?.deviceName) {
-                return res.status(400).json({
-                    success: false,
-                    message: "A device with this name already exists in this venue",
-                });
-            }
+            const keyPattern = error.keyPattern || {};
+            const keyValue = error.keyValue || {};
+            const msg = String(error.message || "");
+            const isNameConflict =
+                keyPattern.deviceName != null ||
+                keyValue.deviceName != null ||
+                msg.includes("deviceName");
+
+            console.warn(
+                "[device/create] duplicate key:",
+                keyPattern,
+                keyValue,
+                msg
+            );
+
             return res.status(409).json({
                 success: false,
-                message: "Generated device id already exists. Please try again.",
+                message: isNameConflict
+                    ? "A device with this name already exists in this venue. Please use a different name."
+                    : "Device conflict. Please try again with a different name.",
             });
         }
 
@@ -496,6 +582,14 @@ const setDevicePower = async (req, res) => {
             });
         }
 
+        if (device.remote === "superlock") {
+            return res.status(403).json({
+                success: false,
+                message:
+                    "Device is Super Locked. Change lock mode before controlling power.",
+            });
+        }
+
         const commandKey = data.state === "on" ? "power.on" : "power.off";
         const published = publishDeviceApplyCommand(device.deviceId, {
             key: commandKey,
@@ -577,6 +671,14 @@ const setDeviceTemperature = async (req, res) => {
             });
         }
 
+        if (device.remote === "superlock") {
+            return res.status(403).json({
+                success: false,
+                message:
+                    "Device is Super Locked. Change lock mode before controlling temperature.",
+            });
+        }
+
         const commandKey = `temp.${data.temperature}`;
         const brandCommands = brandDocumentToCommandsMap(device.brand);
         if (!brandCommands[commandKey]) {
@@ -625,6 +727,92 @@ const setDeviceTemperature = async (req, res) => {
     }
 };
 
+// PUT /api/device/remote/:id  body: { remote: "unlock" | "lock" | "superlock" }
+const setDeviceRemote = async (req, res) => {
+    try {
+        const { id } = req.params;
+        if (!id || !/^[0-9a-fA-F]{24}$/.test(id)) {
+            return res.status(400).json({
+                success: false,
+                message: "Valid device id is required",
+            });
+        }
+
+        const data = setDeviceRemoteSchema.parse(req.body);
+        const device = await Device.findById(id);
+        if (!device) {
+            return res.status(404).json({
+                success: false,
+                message: "Device not found",
+            });
+        }
+
+        const organization = await Organization.findById(device.organization);
+        if (organization && !hasOrganizationAccess(req.user, organization)) {
+            return res.status(403).json({
+                success: false,
+                message: "You cannot change lock mode for this device",
+            });
+        }
+        if (!hasVenueAccess(req.user, device.venue)) {
+            return res.status(403).json({
+                success: false,
+                message: "You cannot change lock mode for this device",
+            });
+        }
+
+        device.remote = data.remote;
+        await device.save();
+
+        // Push mode + current dashboard desired state to ESP (best-effort)
+        publishDeviceRemoteMode(device.deviceId, {
+            remote: device.remote,
+            state: device.state,
+            temperature: device.temperature,
+        });
+
+        if (global.io) {
+            global.io.emit("device:remote", {
+                id: String(device._id),
+                deviceId: device.deviceId,
+                remote: device.remote,
+                isLocked:
+                    device.remote === "lock" || device.remote === "superlock",
+                eventLocked: device.remote === "superlock",
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            message: `Remote mode set to ${device.remote}`,
+            remote: device.remote,
+            device: {
+                _id: device._id,
+                deviceId: device.deviceId,
+                remote: device.remote,
+                state: device.state,
+                temperature: device.temperature,
+            },
+        });
+    } catch (error) {
+        if (error.name === "ZodError") {
+            return res.status(400).json({
+                success: false,
+                message: "Validation failed",
+                errors: error.issues.map((issue) => ({
+                    field: issue.path.join("."),
+                    message: issue.message,
+                })),
+            });
+        }
+        console.error("Set Device Remote Error:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Server error while updating remote lock mode",
+        });
+    }
+};
+
 module.exports = {
     createDevice,
     getDeviceBrandOptions,
@@ -633,4 +821,5 @@ module.exports = {
     deleteDevice,
     setDevicePower,
     setDeviceTemperature,
+    setDeviceRemote,
 };

@@ -17,7 +17,10 @@ const createDeviceSchema = z.object({
     capacity: z.coerce
         .number()
         .refine(
-            (value) => [1, 1.5, 2, 2.5, 3, 3.5].includes(value),
+            (value) =>
+                [1, 1.5, 2, 2.5, 3, 3.5].some(
+                    (allowed) => Math.abs(allowed - value) < 0.001
+                ),
             "Capacity must be one of 1.0, 1.5, 2.0, 2.5, 3.0 or 3.5 tons"
         ),
 });
@@ -42,9 +45,17 @@ const setDeviceTemperatureSchema = z.object({
         .max(30, "temperature must be at most 30"),
 });
 
+const setDeviceRemoteSchema = z.object({
+    remote: z.enum(["unlock", "lock", "superlock"], {
+        required_error: "remote is required",
+        invalid_type_error: "remote must be unlock, lock, or superlock",
+    }),
+});
+
 module.exports = {
     createDeviceSchema,
     updateDeviceSchema,
     setDevicePowerSchema,
     setDeviceTemperatureSchema,
+    setDeviceRemoteSchema,
 };
