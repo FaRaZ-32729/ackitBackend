@@ -10,6 +10,8 @@ const {
     setDevicePower,
     setDeviceTemperature,
     setDeviceRemote,
+    setDeviceMode,
+    setDeviceFan,
 } = require("../controllers/deviceController");
 
 const router = express.Router();
@@ -39,6 +41,18 @@ router.post(
     authenticate,
     checkManagePermission(),
     setDeviceTemperature
+);
+router.post(
+    "/mode/:id",
+    authenticate,
+    checkManagePermission(),
+    setDeviceMode
+);
+router.post(
+    "/fan/:id",
+    authenticate,
+    checkManagePermission(),
+    setDeviceFan
 );
 router.put(
     "/remote/:id",

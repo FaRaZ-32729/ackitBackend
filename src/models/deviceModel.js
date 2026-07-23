@@ -48,6 +48,12 @@ const deviceSchema = new mongoose.Schema(
             enum: ["healthy", "faulty"],
             default: "healthy",
         },
+        /** Human-readable fault reason from ESP (e.g. vent temp above set) */
+        healthAlert: {
+            type: String,
+            default: "",
+            trim: true,
+        },
         version: { type: String, default: "0.0.0" },
         remote: {
             type: String,
@@ -62,7 +68,30 @@ const deviceSchema = new mongoose.Schema(
             max: 30,
             default: 16,
         },
+        /** Line voltage (V) used with ESP current to compute power */
+        voltage: {
+            type: Number,
+            min: 100,
+            max: 400,
+            default: 230,
+        },
+        /** Live measured current from ESP SCT-013 (A) */
+        current: {
+            type: Number,
+            min: 0,
+            default: 0,
+        },
+        /** Live power = voltage × current / 1000 (kW) */
         powerConsumption: { type: Number, default: 0 },
+        /** Last DS18B20 vent/room reading from ESP (°C) */
+        ventTemperature: {
+            type: Number,
+            default: null,
+        },
+        /** Last applied AC mode (cool/heat/dry/fan/auto) when brand supports it */
+        mode: { type: String, default: "" },
+        /** Last applied fan speed when brand supports it */
+        fanSpeed: { type: String, default: "" },
         configure: {
             type: Boolean,
             default: false,

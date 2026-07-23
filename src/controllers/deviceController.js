@@ -9,6 +9,8 @@ const {
     setDevicePowerSchema,
     setDeviceTemperatureSchema,
     setDeviceRemoteSchema,
+    setDeviceModeSchema,
+    setDeviceFanSchema,
 } = require("../validations/deviceValidation");
 const {
     publishDeviceApplyCommand,
@@ -17,6 +19,30 @@ const {
 const { brandDocumentToCommandsMap } = require("../utils/brandCommandMap");
 
 const DEVICE_ID_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+
+/** Resolve first available IR key for a UI mode label */
+function resolveModeCommandKey(mode, brandCommands) {
+    const m = String(mode || "").toLowerCase();
+    const candidates = {
+        cool: ["mode.cool"],
+        heat: ["mode.heat"],
+        dry: ["mode.dry"],
+        fan: ["mode.fan", "mode.fanOnly"],
+        auto: ["mode.auto", "mode.smartAuto"],
+    }[m] || [`mode.${m}`];
+
+    for (const key of candidates) {
+        if (brandCommands[key]) return key;
+    }
+    return null;
+}
+
+/** Resolve IR key for a UI fan speed label */
+function resolveFanCommandKey(fan, brandCommands) {
+    const f = String(fan || "").toLowerCase();
+    const key = `fan.${f}`;
+    return brandCommands[key] ? key : null;
+}
 
 function generateDeviceId() {
     let id = "";
@@ -140,6 +166,7 @@ const createDevice = async (req, res) => {
                     venue: venue._id,
                     brand: brand._id,
                     capacity: data.capacity,
+                    voltage: data.voltage ?? 230,
                 });
                 break;
             } catch (createError) {
@@ -454,6 +481,14 @@ const updateDevice = async (req, res) => {
         device.venue = venue._id;
         device.brand = brand._id;
         device.capacity = data.capacity;
+        if (data.voltage != null) {
+            device.voltage = data.voltage;
+            // Recompute stored power (kW) if we already have a live current reading
+            const amps = Number(device.current) || 0;
+            device.powerConsumption = Number(
+                ((amps * device.voltage) / 1000).toFixed(3)
+            );
+        }
         await device.save();
 
         await device.populate([
@@ -582,14 +617,6 @@ const setDevicePower = async (req, res) => {
             });
         }
 
-        if (device.remote === "superlock") {
-            return res.status(403).json({
-                success: false,
-                message:
-                    "Device is Super Locked. Change lock mode before controlling power.",
-            });
-        }
-
         const commandKey = data.state === "on" ? "power.on" : "power.off";
         const published = publishDeviceApplyCommand(device.deviceId, {
             key: commandKey,
@@ -603,12 +630,15 @@ const setDevicePower = async (req, res) => {
             });
         }
 
+        // Persist desired state so reconnect sync does not fight this command
+        device.state = data.state;
+        await device.save();
+
         return res.status(200).json({
             success: true,
             message: `Power ${data.state} command sent to device`,
             deviceId: device.deviceId,
             requestedState: data.state,
-            // Actual Mongo state updates when ESP reports back via MQTT
             currentState: device.state,
         });
     } catch (error) {
@@ -671,14 +701,6 @@ const setDeviceTemperature = async (req, res) => {
             });
         }
 
-        if (device.remote === "superlock") {
-            return res.status(403).json({
-                success: false,
-                message:
-                    "Device is Super Locked. Change lock mode before controlling temperature.",
-            });
-        }
-
         const commandKey = `temp.${data.temperature}`;
         const brandCommands = brandDocumentToCommandsMap(device.brand);
         if (!brandCommands[commandKey]) {
@@ -700,6 +722,10 @@ const setDeviceTemperature = async (req, res) => {
                 message: "MQTT broker unavailable. Could not reach the device.",
             });
         }
+
+        // Persist desired temperature so reconnect sync stays correct
+        device.temperature = data.temperature;
+        await device.save();
 
         return res.status(200).json({
             success: true,
@@ -813,6 +839,204 @@ const setDeviceRemote = async (req, res) => {
     }
 };
 
+// POST /api/device/mode/:id  body: { mode: cool|heat|dry|fan|auto }
+// Skips (applied:false) when brand has no IR pulse for that mode
+const setDeviceMode = async (req, res) => {
+    try {
+        const { id } = req.params;
+        if (!id || !/^[0-9a-fA-F]{24}$/.test(id)) {
+            return res.status(400).json({
+                success: false,
+                message: "Valid device id is required",
+            });
+        }
+
+        const data = setDeviceModeSchema.parse(req.body);
+        const device = await Device.findById(id).populate("brand");
+        if (!device) {
+            return res.status(404).json({
+                success: false,
+                message: "Device not found",
+            });
+        }
+
+        const organization = await Organization.findById(device.organization);
+        if (organization && !hasOrganizationAccess(req.user, organization)) {
+            return res.status(403).json({
+                success: false,
+                message: "You cannot control this device",
+            });
+        }
+        if (!hasVenueAccess(req.user, device.venue)) {
+            return res.status(403).json({
+                success: false,
+                message: "You cannot control this device",
+            });
+        }
+
+        if (device.status !== "online") {
+            return res.status(409).json({
+                success: false,
+                message: "Device is offline. Connect it before setting mode.",
+            });
+        }
+
+        const brandCommands = brandDocumentToCommandsMap(device.brand);
+        const commandKey = resolveModeCommandKey(data.mode, brandCommands);
+        if (!commandKey) {
+            return res.status(200).json({
+                success: true,
+                applied: false,
+                skipped: true,
+                reason: `No IR command for mode.${data.mode} on this device's brand`,
+                deviceId: device.deviceId,
+                mode: data.mode,
+            });
+        }
+
+        const published = publishDeviceApplyCommand(device.deviceId, {
+            key: commandKey,
+            state: device.state === "on" ? "on" : "off",
+            temperature: device.temperature,
+        });
+
+        if (!published) {
+            return res.status(503).json({
+                success: false,
+                message: "MQTT broker unavailable. Could not reach the device.",
+            });
+        }
+
+        device.mode = data.mode;
+        await device.save();
+
+        return res.status(200).json({
+            success: true,
+            applied: true,
+            skipped: false,
+            message: `Mode ${data.mode} command sent to device`,
+            deviceId: device.deviceId,
+            mode: data.mode,
+            commandKey,
+        });
+    } catch (error) {
+        if (error.name === "ZodError") {
+            return res.status(400).json({
+                success: false,
+                message: "Validation failed",
+                errors: error.issues.map((issue) => ({
+                    field: issue.path.join("."),
+                    message: issue.message,
+                })),
+            });
+        }
+        console.error("Set Device Mode Error:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Server error while controlling device mode",
+        });
+    }
+};
+
+// POST /api/device/fan/:id  body: { fan: low|medium|high|ultra|turbo }
+// Skips (applied:false) when brand has no IR pulse for that fan speed
+const setDeviceFan = async (req, res) => {
+    try {
+        const { id } = req.params;
+        if (!id || !/^[0-9a-fA-F]{24}$/.test(id)) {
+            return res.status(400).json({
+                success: false,
+                message: "Valid device id is required",
+            });
+        }
+
+        const data = setDeviceFanSchema.parse(req.body);
+        const device = await Device.findById(id).populate("brand");
+        if (!device) {
+            return res.status(404).json({
+                success: false,
+                message: "Device not found",
+            });
+        }
+
+        const organization = await Organization.findById(device.organization);
+        if (organization && !hasOrganizationAccess(req.user, organization)) {
+            return res.status(403).json({
+                success: false,
+                message: "You cannot control this device",
+            });
+        }
+        if (!hasVenueAccess(req.user, device.venue)) {
+            return res.status(403).json({
+                success: false,
+                message: "You cannot control this device",
+            });
+        }
+
+        if (device.status !== "online") {
+            return res.status(409).json({
+                success: false,
+                message: "Device is offline. Connect it before setting fan speed.",
+            });
+        }
+
+        const brandCommands = brandDocumentToCommandsMap(device.brand);
+        const commandKey = resolveFanCommandKey(data.fan, brandCommands);
+        if (!commandKey) {
+            return res.status(200).json({
+                success: true,
+                applied: false,
+                skipped: true,
+                reason: `No IR command for fan.${data.fan} on this device's brand`,
+                deviceId: device.deviceId,
+                fan: data.fan,
+            });
+        }
+
+        const published = publishDeviceApplyCommand(device.deviceId, {
+            key: commandKey,
+            state: device.state === "on" ? "on" : "off",
+            temperature: device.temperature,
+        });
+
+        if (!published) {
+            return res.status(503).json({
+                success: false,
+                message: "MQTT broker unavailable. Could not reach the device.",
+            });
+        }
+
+        device.fanSpeed = data.fan;
+        await device.save();
+
+        return res.status(200).json({
+            success: true,
+            applied: true,
+            skipped: false,
+            message: `Fan ${data.fan} command sent to device`,
+            deviceId: device.deviceId,
+            fan: data.fan,
+            commandKey,
+        });
+    } catch (error) {
+        if (error.name === "ZodError") {
+            return res.status(400).json({
+                success: false,
+                message: "Validation failed",
+                errors: error.issues.map((issue) => ({
+                    field: issue.path.join("."),
+                    message: issue.message,
+                })),
+            });
+        }
+        console.error("Set Device Fan Error:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Server error while controlling device fan speed",
+        });
+    }
+};
+
 module.exports = {
     createDevice,
     getDeviceBrandOptions,
@@ -822,4 +1046,6 @@ module.exports = {
     setDevicePower,
     setDeviceTemperature,
     setDeviceRemote,
+    setDeviceMode,
+    setDeviceFan,
 };

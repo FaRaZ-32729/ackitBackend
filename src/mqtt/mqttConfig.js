@@ -248,6 +248,9 @@ async function handleDeviceStatusMessage(deviceId, payload) {
             return;
         }
 
+        const becameOnline =
+            nextStatus === "online" && device.status !== "online";
+
         if (device.status !== nextStatus) {
             device.status = nextStatus;
             await device.save();
@@ -266,17 +269,18 @@ async function handleDeviceStatusMessage(deviceId, payload) {
             });
         }
 
-        // First-time (or not-yet-synced) devices receive full brand IR pack
-        if (nextStatus === "online" && device.configure === false) {
-            publishBrandCommandsToDevice(device);
-        }
+        // Only on transition to online (not every retained/heartbeat online publish)
+        if (becameOnline) {
+            // First-time (or not-yet-synced) devices receive full brand IR pack
+            if (device.configure === false) {
+                publishBrandCommandsToDevice(device);
+            }
 
-        // Keep ESP lock mode + desired dashboard state in sync after reconnect
-        if (nextStatus === "online") {
+            // Sync lock mode only — ESP reports actual last state/temp from flash
             publishDeviceRemoteMode(device.deviceId, {
                 remote: device.remote || "unlock",
-                state: device.state,
-                temperature: device.temperature,
+                state: null,
+                temperature: null,
             });
         }
     } catch (error) {
@@ -446,7 +450,42 @@ async function handleDeviceStateMessage(deviceId, payload) {
         nextTemperature = Math.round(tempRaw);
     }
 
-    if (!nextState && nextTemperature == null) {
+    let nextCurrent = null;
+    const currentRaw =
+        typeof payload === "object" && payload
+            ? Number(payload.current)
+            : NaN;
+    if (Number.isFinite(currentRaw) && currentRaw >= 0 && currentRaw < 100) {
+        nextCurrent = Number(currentRaw.toFixed(3));
+    }
+
+    let nextVentTemperature = null;
+    const ventRaw =
+        typeof payload === "object" && payload
+            ? Number(payload.ventTemperature)
+            : NaN;
+    if (Number.isFinite(ventRaw) && ventRaw > -40 && ventRaw < 85) {
+        nextVentTemperature = Number(ventRaw.toFixed(2));
+    }
+
+    let nextAlert = null;
+    const alertRaw =
+        typeof payload === "object" && payload
+            ? String(payload.alert || "")
+                  .toLowerCase()
+                  .trim()
+            : "";
+    if (alertRaw === "temp_high" || alertRaw === "temp_ok") {
+        nextAlert = alertRaw;
+    }
+
+    if (
+        !nextState &&
+        nextTemperature == null &&
+        nextCurrent == null &&
+        nextVentTemperature == null &&
+        !nextAlert
+    ) {
         console.warn(
             `[MQTT] ignored device state for ${normalizedId}:`,
             payload
@@ -455,22 +494,55 @@ async function handleDeviceStateMessage(deviceId, payload) {
     }
 
     try {
-        const updates = {};
-        if (nextState) updates.state = nextState;
-        if (nextTemperature != null) updates.temperature = nextTemperature;
-
-        const device = await Device.findOneAndUpdate(
-            { deviceId: normalizedId },
-            { $set: updates },
-            { new: true }
-        );
-
+        const device = await Device.findOne({ deviceId: normalizedId });
         if (!device) {
             console.warn(
                 `[MQTT] state report for unknown deviceId=${normalizedId}`
             );
             return;
         }
+
+        const updates = {};
+        if (nextState) updates.state = nextState;
+        if (nextTemperature != null) updates.temperature = nextTemperature;
+
+        if (nextCurrent != null) {
+            const voltage = Number(device.voltage) || 230;
+            updates.current = nextCurrent;
+            // Power (kW) = voltage (V) × current (A) / 1000
+            updates.powerConsumption = Number(
+                ((nextCurrent * voltage) / 1000).toFixed(3)
+            );
+        }
+
+        if (nextVentTemperature != null) {
+            updates.ventTemperature = nextVentTemperature;
+        }
+
+        if (nextAlert === "temp_high") {
+            const setTemp =
+                typeof payload === "object" && payload
+                    ? Number(payload.setTemperature)
+                    : NaN;
+            const resolvedSet = Number.isFinite(setTemp)
+                ? setTemp
+                : device.temperature;
+            const vent =
+                nextVentTemperature != null
+                    ? nextVentTemperature
+                    : device.ventTemperature;
+            updates.health = "faulty";
+            updates.healthAlert =
+                vent != null
+                    ? `Vent ${vent}°C above set ${resolvedSet}°C for 15+ min`
+                    : `Vent temperature above set ${resolvedSet}°C for 15+ min`;
+        } else if (nextAlert === "temp_ok") {
+            updates.health = "healthy";
+            updates.healthAlert = "";
+        }
+
+        Object.assign(device, updates);
+        await device.save();
 
         console.log(
             `[MQTT] device ${normalizedId} (${device.deviceName}) ->`,
@@ -484,7 +556,37 @@ async function handleDeviceStateMessage(deviceId, payload) {
                 state: device.state,
                 isOn: device.state === "on",
                 temperature: device.temperature,
+                current: device.current,
+                voltage: device.voltage,
+                powerConsumption: device.powerConsumption,
+                ventTemperature: device.ventTemperature,
+                health: device.health,
+                healthAlert: device.healthAlert || "",
+                hasFault: device.health === "faulty",
             });
+
+            if (nextAlert) {
+                global.io.emit("device:alert", {
+                    id: String(device._id),
+                    deviceId: device.deviceId,
+                    deviceName: device.deviceName,
+                    alert: nextAlert,
+                    ventTemperature: device.ventTemperature,
+                    setTemperature:
+                        typeof payload === "object" && payload
+                            ? Number(payload.setTemperature) ||
+                              device.temperature
+                            : device.temperature,
+                    health: device.health,
+                    healthAlert: device.healthAlert || "",
+                    hasFault: device.health === "faulty",
+                    message:
+                        nextAlert === "temp_high"
+                            ? device.healthAlert ||
+                              `${device.deviceName}: vent temperature fault`
+                            : `${device.deviceName}: vent temperature back to normal`,
+                });
+            }
         }
     } catch (error) {
         console.error(
