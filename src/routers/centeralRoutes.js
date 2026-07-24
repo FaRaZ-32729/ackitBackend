@@ -11,6 +11,7 @@ const userRoutes = require("./userRoutes")
 const adminDashboardRoutes = require("./adminDashboardRoutes");
 const brandRoutes = require("./brandRoutes");
 const deviceRoutes = require("./deviceRoutes");
+const eventRoutes = require("./eventRoutes");
 const authenticate = require("../middlewares/auth");
 
 // Mount all routes with proper prefixes
@@ -22,6 +23,7 @@ router.use("/user", userRoutes);
 router.use("/dashboard", authenticate, adminDashboardRoutes);
 router.use("/brand", brandRoutes);
 router.use("/device", deviceRoutes);
+router.use("/event", eventRoutes);
 
 // Health check route
 router.get("/health", (req, res) => {

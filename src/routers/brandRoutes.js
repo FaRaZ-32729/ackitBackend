@@ -14,6 +14,7 @@ const {
 
 const router = express.Router();
 
+router.get("/all", getAllBrands);
 router.use(authenticate, roleGuard(["admin"]));
 
 router.post("/configure", createConfigureId);
@@ -22,7 +23,7 @@ router.post("/clear-command", clearCommand);
 router.get("/session/:configureId", getConfigureSession);
 router.post("/save", saveBrand);
 router.post("/apply", applyCommand);
-router.get("/all", getAllBrands);
+
 router.delete("/:id", deleteBrand);
 
 module.exports = router;

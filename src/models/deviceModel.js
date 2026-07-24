@@ -92,6 +92,14 @@ const deviceSchema = new mongoose.Schema(
         mode: { type: String, default: "" },
         /** Last applied fan speed when brand supports it */
         fanSpeed: { type: String, default: "" },
+        /**
+         * Dashboard changed power/temp while ESP was offline.
+         * Cleared after commands are applied on next reconnect.
+         */
+        pendingControl: {
+            type: Boolean,
+            default: false,
+        },
         configure: {
             type: Boolean,
             default: false,

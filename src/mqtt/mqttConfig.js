@@ -17,6 +17,9 @@ let isConnecting = false;
 const lastCommandPushAt = new Map();
 const COMMAND_PUSH_COOLDOWN_MS = 45000;
 
+/** deviceId → true after ESP posts state/temp following an online transition */
+const espStateSyncedAfterOnline = new Map();
+
 function buildBrokerUrl() {
     const host = process.env.MQTT_HOST || "127.0.0.1";
     const port = process.env.MQTT_PORT || "1883";
@@ -251,6 +254,10 @@ async function handleDeviceStatusMessage(deviceId, payload) {
         const becameOnline =
             nextStatus === "online" && device.status !== "online";
 
+        if (becameOnline) {
+            espStateSyncedAfterOnline.delete(normalizedId);
+        }
+
         if (device.status !== nextStatus) {
             device.status = nextStatus;
             await device.save();
@@ -276,12 +283,59 @@ async function handleDeviceStatusMessage(deviceId, payload) {
                 publishBrandCommandsToDevice(device);
             }
 
-            // Sync lock mode only — ESP reports actual last state/temp from flash
+            // Sync lock mode only — ESP also reports last flash state/temp
             publishDeviceRemoteMode(device.deviceId, {
                 remote: device.remote || "unlock",
                 state: null,
                 temperature: null,
             });
+
+            // Dashboard changes while ESP was offline.
+            // Delay so ESP can first publish its flash state/temp (physical remote
+            // changes while offline). If ESP already synced, drop pending.
+            if (device.pendingControl) {
+                const pendingDeviceId = device.deviceId;
+                const pendingMongoId = String(device._id);
+                setTimeout(async () => {
+                    try {
+                        const fresh = await Device.findById(pendingMongoId);
+                        if (!fresh || !fresh.pendingControl) return;
+
+                        if (espStateSyncedAfterOnline.has(pendingDeviceId)) {
+                            fresh.pendingControl = false;
+                            await fresh.save();
+                            console.log(
+                                `[MQTT] skipped pending control for ${pendingDeviceId} — ESP already reported physical state`
+                            );
+                            return;
+                        }
+
+                        const applyState =
+                            fresh.state === "on" || fresh.state === "off"
+                                ? fresh.state
+                                : "off";
+                        publishDeviceApplyCommand(fresh.deviceId, {
+                            key:
+                                applyState === "on" ? "power.on" : "power.off",
+                            state: applyState,
+                            temperature:
+                                applyState === "on" ? fresh.temperature : null,
+                        });
+                        fresh.pendingControl = false;
+                        await fresh.save();
+                        console.log(
+                            `[MQTT] applied pending control for ${pendingDeviceId}: ${applyState} / ${fresh.temperature}`
+                        );
+                    } catch (err) {
+                        console.error(
+                            `[MQTT] pending control apply failed:`,
+                            err.message
+                        );
+                    }
+                }, 3000);
+            } else {
+                // No pending dashboard command — trust ESP flash as source of truth
+            }
         }
     } catch (error) {
         console.error(
@@ -421,6 +475,69 @@ function publishDeviceRemoteMode(deviceId, { remote, state, temperature }) {
     return true;
 }
 
+/**
+ * Tell ESP to run a scheduled event phase (start | end).
+ * Topic: ackit/device/{deviceId}/control  action=event
+ *
+ * Payload example:
+ * {
+ *   action: "event",
+ *   phase: "start",
+ *   eventAction: "ON",
+ *   temperature: 24,
+ *   remote: "lock",
+ *   eventId: "...",
+ *   name: "Morning"
+ * }
+ */
+function publishDeviceEvent(deviceId, {
+    phase,
+    eventAction,
+    temperature,
+    remote,
+    eventId,
+    name,
+}) {
+    const mqttClient = getMqttClient();
+    if (!mqttClient?.connected) return false;
+
+    const normalizedId = String(deviceId || "")
+        .trim()
+        .toUpperCase();
+    if (!/^[A-Z0-9]{6}$/.test(normalizedId)) return false;
+
+    const normalizedPhase = phase === "end" ? "end" : "start";
+    const normalizedAction =
+        String(eventAction || "").toUpperCase() === "OFF" ? "OFF" : "ON";
+    const mode = ["unlock", "lock", "superlock"].includes(remote)
+        ? remote
+        : normalizedAction === "OFF"
+          ? "lock"
+          : "unlock";
+
+    const topic = `ackit/device/${normalizedId}/control`;
+    const payload = JSON.stringify({
+        action: "event",
+        phase: normalizedPhase,
+        eventAction: normalizedAction,
+        remote: mode,
+        temperature:
+            temperature == null || Number.isNaN(Number(temperature))
+                ? null
+                : Number(temperature),
+        eventId: eventId ? String(eventId) : null,
+        name: name ? String(name) : null,
+    });
+
+    mqttClient.publish(topic, payload);
+    console.log(
+        `[MQTT] event -> ${topic} phase=${normalizedPhase} action=${normalizedAction} remote=${mode} temp=${
+            temperature == null ? "-" : temperature
+        }`
+    );
+    return true;
+}
+
 async function handleDeviceStateMessage(deviceId, payload) {
     const normalizedId = String(deviceId || "")
         .trim()
@@ -505,6 +622,15 @@ async function handleDeviceStateMessage(deviceId, payload) {
         const updates = {};
         if (nextState) updates.state = nextState;
         if (nextTemperature != null) updates.temperature = nextTemperature;
+
+        // Physical AC report from ESP (incl. after offline remote changes)
+        if (nextState || nextTemperature != null) {
+            espStateSyncedAfterOnline.set(normalizedId, true);
+            // Device flash/remote is source of truth — drop stale dashboard pending
+            if (device.pendingControl) {
+                updates.pendingControl = false;
+            }
+        }
 
         if (nextCurrent != null) {
             const voltage = Number(device.voltage) || 230;
@@ -741,4 +867,5 @@ module.exports = {
     publishBrandCommandsToDevice,
     publishDeviceApplyCommand,
     publishDeviceRemoteMode,
+    publishDeviceEvent,
 };

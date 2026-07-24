@@ -6,6 +6,7 @@ const cors = require("cors");
 const http = require("http");
 const { Server } = require("socket.io");
 const { connectMqtt } = require("./src/mqtt/mqttConfig");
+const { startScheduleWorker } = require("./src/queues/startScheduleWorker");
 
 // Routers
 const centeralRoutes = require("./src/routers/centeralRoutes");
@@ -14,6 +15,8 @@ const centeralRoutes = require("./src/routers/centeralRoutes");
 dotenv.config();
 dbConnection();
 connectMqtt();
+// BullMQ consumer — required for scheduled events to fire (same process as API)
+startScheduleWorker();
 
 
 const port = process.env.PORT || 5054;
@@ -24,7 +27,8 @@ const server = http.createServer(app);
 const allowedOrigins = [
     "https://ackit.vercel.app",
     "http://localhost:5173",
-    "http://localhost:3000"
+    "http://localhost:3000",
+    "https://iotfiy-ecosystem.vercel.app"
 ];
 
 app.use(cors({

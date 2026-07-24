@@ -611,16 +611,44 @@ const setDevicePower = async (req, res) => {
         }
 
         if (device.status !== "online") {
-            return res.status(409).json({
-                success: false,
-                message: "Device is offline. Turn it on before sending power commands.",
+            // Still accept dashboard intent while offline — apply on next reconnect
+            device.state = data.state;
+            device.pendingControl = true;
+            await device.save();
+
+            if (global.io) {
+                global.io.emit("device:state", {
+                    id: String(device._id),
+                    deviceId: device.deviceId,
+                    state: device.state,
+                    isOn: device.state === "on",
+                    temperature: device.temperature,
+                });
+            }
+
+            return res.status(200).json({
+                success: true,
+                pending: true,
+                message:
+                    "Device is offline. Power change saved and will apply when it reconnects.",
+                deviceId: device.deviceId,
+                requestedState: data.state,
+                currentState: device.state,
+                temperature: device.temperature,
             });
         }
 
         const commandKey = data.state === "on" ? "power.on" : "power.off";
+        // Haier-style IR: power.on frame usually embeds a fixed temp from training.
+        // Always send last known DB temperature with ON so ESP can follow up with temp.N.
         const published = publishDeviceApplyCommand(device.deviceId, {
             key: commandKey,
             state: data.state,
+            temperature:
+                data.state === "on" &&
+                Number.isFinite(Number(device.temperature))
+                    ? Number(device.temperature)
+                    : null,
         });
 
         if (!published) {
@@ -632,6 +660,7 @@ const setDevicePower = async (req, res) => {
 
         // Persist desired state so reconnect sync does not fight this command
         device.state = data.state;
+        device.pendingControl = false;
         await device.save();
 
         return res.status(200).json({
@@ -640,6 +669,7 @@ const setDevicePower = async (req, res) => {
             deviceId: device.deviceId,
             requestedState: data.state,
             currentState: device.state,
+            temperature: device.temperature,
         });
     } catch (error) {
         if (error.name === "ZodError") {
@@ -695,9 +725,28 @@ const setDeviceTemperature = async (req, res) => {
         }
 
         if (device.status !== "online") {
-            return res.status(409).json({
-                success: false,
-                message: "Device is offline. Connect it before setting temperature.",
+            device.temperature = data.temperature;
+            device.pendingControl = true;
+            await device.save();
+
+            if (global.io) {
+                global.io.emit("device:state", {
+                    id: String(device._id),
+                    deviceId: device.deviceId,
+                    state: device.state,
+                    isOn: device.state === "on",
+                    temperature: device.temperature,
+                });
+            }
+
+            return res.status(200).json({
+                success: true,
+                pending: true,
+                message:
+                    "Device is offline. Temperature saved and will apply when it reconnects.",
+                deviceId: device.deviceId,
+                requestedTemperature: data.temperature,
+                currentTemperature: device.temperature,
             });
         }
 
@@ -725,6 +774,7 @@ const setDeviceTemperature = async (req, res) => {
 
         // Persist desired temperature so reconnect sync stays correct
         device.temperature = data.temperature;
+        device.pendingControl = false;
         await device.save();
 
         return res.status(200).json({
