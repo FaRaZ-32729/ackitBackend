@@ -1,6 +1,7 @@
 const scheduleQueue = require("./scheduleQueue");
 const redisConnection = require("../config/redisConnection");
 const { generateCron, oneTimeFireTimesUtcMs } = require("./cronHelper");
+const Event = require("../models/eventModel");
 
 const EVENT_REDIS_PREFIX = "ackit:event:";
 
@@ -113,6 +114,19 @@ async function scheduleEventJobs(event) {
                 `end in ${Math.round(endDelay / 1000)}s ` +
                 `(${new Date(startAt).toISOString()} → ${new Date(endAt).toISOString()})`
         );
+
+        // Persist absolute window so "covering now" checks work (empty days)
+        try {
+            await Event.findByIdAndUpdate(eventId, {
+                windowStartAt: new Date(startAt),
+                windowEndAt: new Date(endAt),
+            });
+        } catch (err) {
+            console.warn(
+                `[Event] failed to save window for ${eventId}:`,
+                err.message
+            );
+        }
 
         return {
             startJobId,

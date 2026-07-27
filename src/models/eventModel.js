@@ -33,6 +33,19 @@ const eventSchema = new mongoose.Schema(
             ref: "Device",
             default: null,
         },
+        /**
+         * For organization-scoped events created by venue-restricted users:
+         * only these venues receive the event. Empty = entire organization.
+         */
+        allowedVenues: {
+            type: [
+                {
+                    type: mongoose.Schema.Types.ObjectId,
+                    ref: "Venue",
+                },
+            ],
+            default: [],
+        },
         /** ON or OFF event */
         action: {
             type: String,
@@ -90,6 +103,25 @@ const eventSchema = new mongoose.Schema(
             enum: ["ACTIVE", "INACTIVE"],
             default: "ACTIVE",
         },
+        /**
+         * Devices that manually overrode this event for the current occurrence only.
+         * Cleared on event END and again on the next START (so recurring resumes next day).
+         * To stop an event permanently, disable it.
+         */
+        ignoredDeviceIds: {
+            type: [
+                {
+                    type: mongoose.Schema.Types.ObjectId,
+                    ref: "Device",
+                },
+            ],
+            default: [],
+        },
+        /** When current ignores expire (end of this occurrence) */
+        ignoreUntil: { type: Date, default: null },
+        /** Absolute UTC window for one-time events (covering / ignore checks) */
+        windowStartAt: { type: Date, default: null },
+        windowEndAt: { type: Date, default: null },
         /** BullMQ repeatable job keys */
         startJobId: { type: String, default: "" },
         endJobId: { type: String, default: "" },

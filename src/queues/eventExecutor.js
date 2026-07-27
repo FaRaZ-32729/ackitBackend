@@ -5,6 +5,7 @@ const {
     publishDeviceRemoteMode,
 } = require("../mqtt/mqttConfig");
 const { cleanupOneTimeEvent } = require("./scheduleService");
+const { oneTimeFireTimesUtcMs } = require("./cronHelper");
 
 const SCOPE_RANK = {
     organization: 3,
@@ -39,9 +40,42 @@ function isTimeWithinWindow(nowHm, startHm, endHm) {
     return nowHm >= startHm || nowHm < endHm;
 }
 
-/** Whether an event’s UTC window covers this UTC weekday + HH:mm (incl. overnight). */
+/**
+ * Whether an event’s window covers "now".
+ * Recurring: UTC weekday + HH:mm.
+ * One-time (empty days): absolute windowStartAt/windowEndAt (or reconstructed).
+ */
 function isEventActiveAt(event, now) {
     const startDays = event.days || [];
+    const isOneTime =
+        event.isRecurring === false ||
+        !Array.isArray(startDays) ||
+        startDays.length === 0;
+
+    if (isOneTime) {
+        const t = Date.now();
+        if (event.windowStartAt && event.windowEndAt) {
+            const startMs = new Date(event.windowStartAt).getTime();
+            const endMs = new Date(event.windowEndAt).getTime();
+            return t >= startMs && t < endMs;
+        }
+        // Existing one-time events without persisted window — reconstruct
+        try {
+            const createdMs = event.createdAt
+                ? new Date(event.createdAt).getTime() - 60_000
+                : t - 24 * 60 * 60 * 1000;
+            const { startAt, endAt } = oneTimeFireTimesUtcMs({
+                localStartTime: event.localStartTime || event.startTime,
+                localEndTime: event.localEndTime || event.endTime,
+                timezoneOffsetMinutes: event.timezoneOffsetMinutes ?? 0,
+                afterMs: createdMs,
+            });
+            return t >= startAt && t < endAt;
+        } catch {
+            return false;
+        }
+    }
+
     const endDays =
         Array.isArray(event.endDays) && event.endDays.length > 0
             ? event.endDays
@@ -60,6 +94,81 @@ function isEventActiveAt(event, now) {
     if (startDays.includes(now.day) && now.time >= event.startTime) return true;
     if (endDays.includes(now.day) && now.time < event.endTime) return true;
     return false;
+}
+
+/** Whether an org event applies to this device (respects allowedVenues). */
+function orgEventCoversDevice(event, device) {
+    if (String(event.organization) !== String(device.organization)) {
+        return false;
+    }
+    const allowed = event.allowedVenues || [];
+    if (allowed.length === 0) return true;
+    if (!device.venue) return false;
+    return allowed.some((id) => String(id) === String(device.venue));
+}
+
+function isDeviceIgnoredByEvent(event, deviceId) {
+    if (!deviceId) return false;
+    const ids = event.ignoredDeviceIds || [];
+    if (!ids.some((id) => String(id) === String(deviceId))) {
+        return false;
+    }
+    // Expired ignore (past this occurrence) → treat as not ignored
+    if (event.ignoreUntil) {
+        const until = new Date(event.ignoreUntil).getTime();
+        if (Number.isFinite(until) && Date.now() >= until) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/** Does this event currently cover this device (scope + active window + not ignored)? */
+function eventCoversDeviceNow(event, device, now) {
+    if (!isEventActiveAt(event, now)) return false;
+    if (isDeviceIgnoredByEvent(event, device._id)) return false;
+
+    const isSuperlocked = device.remote === "superlock";
+
+    if (event.scope === "device") {
+        return (
+            Boolean(event.device) &&
+            String(event.device) === String(device._id)
+        );
+    }
+    if (event.scope === "venue") {
+        if (isSuperlocked) return false;
+        return (
+            Boolean(event.venue) &&
+            String(event.venue) === String(device.venue)
+        );
+    }
+    if (event.scope === "organization") {
+        if (isSuperlocked) return false;
+        return orgEventCoversDevice(event, device);
+    }
+    return false;
+}
+
+/**
+ * Find enabled ACTIVE events whose UTC window currently covers this device.
+ */
+async function findCoveringEventsForDevice(device) {
+    if (!device) return [];
+    const now = hhmmNowInTz("UTC");
+    const candidates = await Event.find({
+        enabled: true,
+        status: "ACTIVE",
+        organization: device.organization,
+    }).lean();
+
+    const covering = candidates.filter((ev) =>
+        eventCoversDeviceNow(ev, device, now)
+    );
+    console.log(
+        `[Event] covering check device=${device.deviceId} now=${now.day} ${now.time} → ${covering.length} event(s)`
+    );
+    return covering;
 }
 
 /**
@@ -88,25 +197,19 @@ async function findBlockingHigherEvent(device, candidateEvent, now) {
     for (const other of others) {
         const rank = SCOPE_RANK[other.scope] || 0;
         if (rank <= candidateRank) continue;
-        if (!isEventActiveAt(other, now)) {
+        if (!eventCoversDeviceNow(other, device, now)) {
             continue;
         }
 
-        // Scope must actually cover this device
         if (other.scope === "organization") {
-            if (String(other.organization) !== String(device.organization)) continue;
-            // Superlock device ignores org
             if (isSuperlocked) continue;
             return { blocked: true, reason: "org_event", event: other };
         }
         if (other.scope === "venue") {
-            if (!other.venue || String(other.venue) !== String(device.venue)) continue;
             if (isSuperlocked) continue;
             return { blocked: true, reason: "venue_event", event: other };
         }
         if (other.scope === "device") {
-            if (!other.device || String(other.device) !== String(device._id)) continue;
-            // Higher than candidate only if candidate is somehow lower — device is lowest
             continue;
         }
     }
@@ -123,7 +226,12 @@ async function resolveTargetDevices(event) {
         return Device.find({ venue: event.venue });
     }
     if (event.scope === "organization") {
-        return Device.find({ organization: event.organization });
+        const query = { organization: event.organization };
+        const allowed = event.allowedVenues || [];
+        if (allowed.length > 0) {
+            query.venue = { $in: allowed };
+        }
+        return Device.find(query);
     }
     return [];
 }
@@ -221,6 +329,21 @@ async function executeEventJob({ eventId, phase }) {
         `[Event] ${phase} ${event.name} (${event.scope}/${event.action}) → ${devices.length} device(s) @ ${now.day} ${now.time}`
     );
 
+    // Recurring: each new START is a fresh day — clear yesterday's manual ignores
+    if (phase === "start") {
+        const hasIgnores =
+            (event.ignoredDeviceIds && event.ignoredDeviceIds.length > 0) ||
+            event.ignoreUntil;
+        if (hasIgnores) {
+            event.ignoredDeviceIds = [];
+            event.ignoreUntil = null;
+            await event.save();
+            console.log(
+                `[Event] cleared prior ignores for ${event._id} (new occurrence)`
+            );
+        }
+    }
+
     const results = [];
 
     for (const device of devices) {
@@ -229,6 +352,15 @@ async function executeEventJob({ eventId, phase }) {
                 deviceId: device.deviceId,
                 skipped: true,
                 reason: "offline",
+            });
+            continue;
+        }
+
+        if (isDeviceIgnoredByEvent(event, device._id)) {
+            results.push({
+                deviceId: device.deviceId,
+                skipped: true,
+                reason: "manually_ignored",
             });
             continue;
         }
@@ -277,28 +409,18 @@ async function executeEventJob({ eventId, phase }) {
 
             let keepOn = false;
             for (const other of covering) {
-                if (!isEventActiveAt(other, now)) {
+                if (!eventCoversDeviceNow(other, device, now)) {
                     continue;
                 }
                 if (other.scope === "organization") {
-                    if (device.remote === "superlock") continue;
                     keepOn = true;
                     break;
                 }
-                if (
-                    other.scope === "venue" &&
-                    other.venue &&
-                    String(other.venue) === String(device.venue)
-                ) {
-                    if (device.remote === "superlock") continue;
+                if (other.scope === "venue") {
                     keepOn = true;
                     break;
                 }
-                if (
-                    other.scope === "device" &&
-                    other.device &&
-                    String(other.device) === String(device._id)
-                ) {
+                if (other.scope === "device") {
                     keepOn = true;
                     break;
                 }
@@ -346,6 +468,18 @@ async function executeEventJob({ eventId, phase }) {
         }
     }
 
+    // Clear manual ignores when the window ends so the next cycle applies cleanly
+    if (phase === "end") {
+        const hasIgnores =
+            (event.ignoredDeviceIds && event.ignoredDeviceIds.length > 0) ||
+            event.ignoreUntil;
+        if (hasIgnores) {
+            event.ignoredDeviceIds = [];
+            event.ignoreUntil = null;
+            await event.save();
+        }
+    }
+
     // One-time event: after END job finishes, remove from queue + Mongo
     const isOneTime =
         event.isRecurring === false ||
@@ -361,6 +495,10 @@ async function executeEventJob({ eventId, phase }) {
 module.exports = {
     executeEventJob,
     findBlockingHigherEvent,
+    findCoveringEventsForDevice,
     resolveTargetDevices,
+    isEventActiveAt,
+    orgEventCoversDevice,
+    isDeviceIgnoredByEvent,
     SCOPE_RANK,
 };
