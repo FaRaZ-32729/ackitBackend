@@ -1,5 +1,6 @@
 const mqtt = require("mqtt");
 const Device = require("../models/deviceModel");
+const DeviceCurrent = require("../models/deviceCurrentModel");
 const {
     getSession,
     markDeviceConnected,
@@ -632,14 +633,36 @@ async function handleDeviceStateMessage(deviceId, payload) {
             }
         }
 
-        if (nextCurrent != null) {
-            const voltage = Number(device.voltage) || 230;
-            updates.current = nextCurrent;
-            // Power (kW) = voltage (V) × current (A) / 1000
-            updates.powerConsumption = Number(
-                ((nextCurrent * voltage) / 1000).toFixed(3)
+    // Only accept current from dedicated ESP average publishes: {"current": ...}
+    // Ignore current bundled with state/temp (reconnect / retained state sync).
+    const isCurrentOnlyTelemetry =
+        nextCurrent != null &&
+        !nextState &&
+        nextTemperature == null &&
+        nextVentTemperature == null &&
+        !nextAlert &&
+        typeof payload === "object" &&
+        payload != null;
+
+    if (isCurrentOnlyTelemetry) {
+        const voltage = Number(device.voltage) || 230;
+        updates.current = nextCurrent;
+        // Power (kW) = voltage (V) × current (A) / 1000
+        updates.powerConsumption = Number(
+            ((nextCurrent * voltage) / 1000).toFixed(3)
+        );
+
+        DeviceCurrent.create({
+            device: device._id,
+            current: nextCurrent,
+            timestamp: new Date(),
+        }).catch((err) => {
+            console.warn(
+                `[MQTT] DeviceCurrent save failed for ${normalizedId}:`,
+                err.message
             );
-        }
+        });
+    }
 
         if (nextVentTemperature != null) {
             updates.ventTemperature = nextVentTemperature;
