@@ -308,6 +308,67 @@ const getDeviceBrandOptions = async (_req, res) => {
     }
 };
 
+// GET /api/device/:id
+const getDeviceById = async (req, res) => {
+    try {
+        const { id } = req.params;
+        if (!id || !/^[0-9a-fA-F]{24}$/.test(id)) {
+            return res.status(400).json({
+                success: false,
+                message: "Valid device id is required",
+            });
+        }
+
+        const device = await Device.findById(id)
+            .populate("organization", "name owner")
+            .populate("venue", "name organization")
+            .populate("brand", "brandName");
+
+        if (!device) {
+            return res.status(404).json({
+                success: false,
+                message: "Device not found",
+            });
+        }
+
+        const organization =
+            device.organization && device.organization._id
+                ? device.organization
+                : await Organization.findById(device.organization);
+
+        if (!organization) {
+            return res.status(404).json({
+                success: false,
+                message: "Organization for this device was not found",
+            });
+        }
+
+        if (!hasOrganizationAccess(req.user, organization)) {
+            return res.status(403).json({
+                success: false,
+                message: "You cannot view this device",
+            });
+        }
+        if (!hasVenueAccess(req.user, device.venue?._id || device.venue)) {
+            return res.status(403).json({
+                success: false,
+                message: "You cannot view this device",
+            });
+        }
+
+        return res.status(200).json({
+            success: true,
+            device,
+        });
+    } catch (error) {
+        console.error("getDeviceById error:", error);
+        return res.status(500).json({
+            success: false,
+            message: "Server error while fetching device",
+        });
+    }
+};
+
 // GET /api/device/by-venue/:venueId
 const getDevicesByVenue = async (req, res) => {
     try {
@@ -1090,6 +1151,7 @@ const setDeviceFan = async (req, res) => {
 module.exports = {
     createDevice,
     getDeviceBrandOptions,
+    getDeviceById,
     getDevicesByVenue,
     updateDevice,
     deleteDevice,

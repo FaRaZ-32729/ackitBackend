@@ -4,6 +4,7 @@ const checkManagePermission = require("../middlewares/checkPermission");
 const {
     createDevice,
     getDeviceBrandOptions,
+    getDeviceById,
     getDevicesByVenue,
     updateDevice,
     deleteDevice,
@@ -13,11 +14,14 @@ const {
     setDeviceMode,
     setDeviceFan,
 } = require("../controllers/deviceController");
+const { getDeviceEnergy } = require("../controllers/energyController");
 
 const router = express.Router();
 
 router.get("/brand-options", authenticate, getDeviceBrandOptions);
+router.get("/energy", authenticate, getDeviceEnergy);
 router.get("/by-venue/:venueId", authenticate, getDevicesByVenue);
+router.get("/:id", authenticate, getDeviceById);
 router.post(
     "/create",
     authenticate,
