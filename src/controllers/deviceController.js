@@ -537,11 +537,18 @@ const updateDevice = async (req, res) => {
             });
         }
 
+        const previousBrandId = String(device.brand || "");
+        const nextBrandId = String(brand._id);
+
         device.deviceName = data.name;
         device.organization = organization._id;
         device.venue = venue._id;
         device.brand = brand._id;
         device.capacity = data.capacity;
+        // Brand IR pack on ESP is invalid only when the brand changes
+        if (previousBrandId !== nextBrandId) {
+            device.configure = false;
+        }
         if (data.voltage != null) {
             device.voltage = data.voltage;
             // Recompute stored power (kW) if we already have a live current reading
