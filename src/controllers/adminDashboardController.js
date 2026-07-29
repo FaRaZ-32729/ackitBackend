@@ -114,7 +114,7 @@ const getManagerFullDetails = async (req, res) => {
             creatorId: managerId,
             role: "user"
         })
-            .select("name email isActive permission venues")
+            .select("name email isActive venues")
             .lean();
 
         // Calculate device count for each sub-user
@@ -131,7 +131,6 @@ const getManagerFullDetails = async (req, res) => {
                 name: user.name,
                 email: user.email,
                 isActive: user.isActive,
-                permission: user.permission,
                 totalAssignedOrganizations,
                 totalAssignedVenues: venueIds.length,
                 totalDevices: devicesCount
@@ -244,7 +243,7 @@ const getSubUserDetails = async (req, res) => {
 
         // ==================== FETCH USER ====================
         const user = await User.findById(userId)
-            .select("name email isActive permission organizations venues")
+            .select("name email isActive organizations venues")
             .lean();
 
         if (!user) {
@@ -290,7 +289,6 @@ const getSubUserDetails = async (req, res) => {
                 name: user.name,
                 email: user.email,
                 isActive: user.isActive,
-                permission: user.permission,
                 totalAssignedOrganizations,
                 totalAssignedVenues,
                 totalDevices

@@ -11,7 +11,7 @@ router.put("/suspend/:managerId",
     suspendManager
 );
 
-// this api is used to add or remove organization , venues , and update permission
+// Manager assigns/removes organizations & venues only (not name/email)
 router.put(
     "/update-user/:userId",
     authenticate,

@@ -134,24 +134,19 @@ const getSingleUser = async (req, res) => {
     }
 };
 
-// this api is used to add or remove organization , venues , and update permission
+// Manager can only assign / remove organizations and venues (not name/email)
 const updateManagerCreatedUser = async (req, res) => {
     try {
-
         const manager = req.user;
         const { userId } = req.params;
 
-        const {
-            organizations,
-            venues,
-            permission
-        } = req.body;
+        const { organizations, venues } = req.body;
 
         // ================= ONLY MANAGER =================
         if (manager.role !== "manager") {
             return res.status(403).json({
                 success: false,
-                message: "Only managers can update users"
+                message: "Only managers can update users",
             });
         }
 
@@ -161,17 +156,16 @@ const updateManagerCreatedUser = async (req, res) => {
         if (!user) {
             return res.status(404).json({
                 success: false,
-                message: "User not found"
+                message: "User not found",
             });
         }
 
         // ================= CHECK OWNERSHIP =================
-        if (
-            user.creatorId.toString() !== manager._id.toString()
-        ) {
+        const creatorId = user.creatorId ? String(user.creatorId) : "";
+        if (!creatorId || creatorId !== String(manager._id)) {
             return res.status(403).json({
                 success: false,
-                message: "You can only update your own users"
+                message: "You can only update your own users",
             });
         }
 
@@ -179,89 +173,94 @@ const updateManagerCreatedUser = async (req, res) => {
         if (user.role !== "user") {
             return res.status(400).json({
                 success: false,
-                message: "Only normal users can be updated"
+                message: "Only normal users can be updated",
             });
         }
 
-        // ================= VALIDATE ORGANIZATIONS =================
+        // ================= ORGANIZATIONS (required) =================
+        const uniqueOrgIds = [
+            ...new Set(
+                (Array.isArray(organizations) ? organizations : [])
+                    .map((id) => String(id || "").trim())
+                    .filter(Boolean)
+            ),
+        ];
 
-        if (organizations && organizations.length > 0) {
-
-            const validOrganizations = await Organization.find({
-                _id: { $in: organizations },
-                owner: manager._id
+        if (uniqueOrgIds.length === 0) {
+            return res.status(400).json({
+                success: false,
+                message: "At least one organization is required",
             });
-
-            if (validOrganizations.length !== organizations.length) {
-                return res.status(403).json({
-                    success: false,
-                    message: "One or more organizations are invalid"
-                });
-            }
-
-            user.organizations = organizations;
         }
 
-        // ================= VALIDATE VENUES =================
+        // Allow orgs the manager owns, or that are already on the manager account
+        const managerOrgIds = (manager.organizations || []).map((id) =>
+            String(id)
+        );
+        const validOrganizations = await Organization.find({
+            _id: { $in: uniqueOrgIds },
+            $or: [
+                { owner: manager._id },
+                { _id: { $in: managerOrgIds } },
+            ],
+        });
 
+        if (validOrganizations.length !== uniqueOrgIds.length) {
+            return res.status(403).json({
+                success: false,
+                message: "One or more organizations are invalid",
+            });
+        }
+
+        const allowedOrgIds = validOrganizations.map((o) => o._id);
+        user.organizations = allowedOrgIds;
+
+        // ================= VENUES (optional; empty clears all) =================
+        // Only keep venues that belong to the selected organizations.
+        // Orphan venues from old orgs are dropped (avoids hard 403 on stale data).
         if (Array.isArray(venues)) {
-            if (venues.length === 0) {
+            const uniqueVenueIds = [
+                ...new Set(
+                    venues
+                        .map((id) => String(id || "").trim())
+                        .filter(Boolean)
+                ),
+            ];
+
+            if (uniqueVenueIds.length === 0) {
                 user.venues = [];
             } else {
-                const orgIds = (organizations && organizations.length > 0)
-                    ? organizations
-                    : user.organizations;
-
                 const validVenues = await Venue.find({
-                    _id: { $in: venues },
-                    organization: { $in: orgIds }
+                    _id: { $in: uniqueVenueIds },
+                    organization: { $in: allowedOrgIds },
                 });
 
-                if (validVenues.length !== venues.length) {
-                    return res.status(403).json({
-                        success: false,
-                        message: "One or more venues are invalid"
-                    });
-                }
-
-                user.venues = validVenues.map(v => ({
+                user.venues = validVenues.map((v) => ({
                     venueId: v._id,
-                    venueName: v.name
+                    venueName: v.name,
                 }));
             }
-        }
-
-        // ================= VALIDATE PERMISSION =================
-
-        if (permission) {
-            const allowedPermissions = ["view", "manage"];
-
-            if (!allowedPermissions.includes(permission)) {
-                return res.status(400).json({
-                    success: false,
-                    message: "Invalid permission value. Allowed: view, manage"
-                });
-            }
-
-            user.permission = permission;
         }
 
         // ================= SAVE =================
         await user.save();
 
+        const populated = await User.findById(user._id)
+            .populate("organizations", "name")
+            .populate("venues.venueId", "name")
+            .select("-password");
+
         return res.status(200).json({
             success: true,
             message: "User access updated successfully",
-            user
+            user: populated || user,
         });
-
     } catch (error) {
-
         console.error("Update Manager User Access Error:", error);
 
         return res.status(500).json({
             success: false,
-            message: "Server error while updating user"
+            message: "Server error while updating user",
         });
     }
 };

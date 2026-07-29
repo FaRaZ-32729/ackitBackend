@@ -18,7 +18,6 @@ const createSubUserSchema = z.object({
     role: z.literal("user"),
     organizations: z.array(z.string()).min(1, "At least one organization is required"),
     venues: z.array(z.string()).optional(), // Venue IDs
-    permission: z.enum(["view", "manage"]).default("view"),
     timer: z.string().optional()
 });
 

@@ -362,7 +362,6 @@ const createSubUser = async (req, res) => {
             createdBy: "manager",
             organizations: validatedData.organizations,
             venues: assignedVenues,
-            permission: validatedData.permission,
             setupToken,
             otp,
             otpExpiry: otpExpiresAt,
@@ -406,8 +405,7 @@ const createSubUser = async (req, res) => {
                 id: newUser._id,
                 name: newUser.name,
                 email: newUser.email,
-                role: newUser.role,
-                permission: newUser.permission
+                role: newUser.role
             }
         });
 
@@ -688,7 +686,6 @@ const loginUser = async (req, res) => {
                 email: user.email,
                 role: user.role,
                 isActive: user.isActive,
-                permission: user.permission || null,
                 currentSubscription: user.currentSubscription || null
             }
         });
@@ -833,7 +830,6 @@ const me = async (req, res) => {
             name: populatedUser.name,
             email: populatedUser.email,
             role: populatedUser.role,
-            permission: populatedUser.permission,
             isActive: populatedUser.isActive,
             isVerified: populatedUser.isVerified,
             createdBy: populatedUser.createdBy,

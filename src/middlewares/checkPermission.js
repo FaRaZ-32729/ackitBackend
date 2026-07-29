@@ -1,33 +1,21 @@
-// src/middleware/checkPermission.js
-
+// Allow authenticated admin / manager / user — no view/manage permission gate
 const checkManagePermission = () => {
     return async (req, res, next) => {
         try {
             const user = req.user;
 
-            // Admins and Managers have full access
-            if (user.role === "admin" || user.role === "manager") {
+            if (
+                user?.role === "admin" ||
+                user?.role === "manager" ||
+                user?.role === "user"
+            ) {
                 return next();
             }
 
-            // For normal users (sub-users)
-            if (user.role === "user") {
-                if (user.permission === "manage") {
-                    return next();
-                } else {
-                    return res.status(403).json({
-                        success: false,
-                        message: "You don't have permission access this"
-                    });
-                }
-            }
-
-            // Fallback
             return res.status(403).json({
                 success: false,
                 message: "Access denied"
             });
-
         } catch (error) {
             console.error("Permission Check Error:", error);
             res.status(500).json({ success: false, message: "Server error" });
