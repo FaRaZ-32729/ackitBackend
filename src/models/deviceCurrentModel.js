@@ -1,7 +1,9 @@
 const mongoose = require("mongoose");
+const timeseriesConnection = require("../config/timeseriesConnection");
 
 /**
  * Time-series of ESP SCT-013 current samples (typically every 5 minutes).
+ * Stored ONLY on MONGODB_TIMESERIES_DB — not the main app database.
  * Fields: device (_id) + current (A) + timestamp only.
  */
 const deviceCurrentSchema = new mongoose.Schema(
@@ -36,7 +38,13 @@ const deviceCurrentSchema = new mongoose.Schema(
 
 deviceCurrentSchema.index({ device: 1, timestamp: -1 });
 
-module.exports = mongoose.model(
+if (!timeseriesConnection) {
+    throw new Error(
+        "MONGODB_TIMESERIES_DB is required for DeviceCurrent time-series storage"
+    );
+}
+
+module.exports = timeseriesConnection.model(
     "DeviceCurrent",
     deviceCurrentSchema,
     "device_currents"
