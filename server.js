@@ -28,7 +28,8 @@ const allowedOrigins = [
     "https://ackit.vercel.app",
     "http://localhost:5173",
     "http://localhost:3000",
-    "https://iotfiy-ecosystem.vercel.app"
+    "https://iotfiy-ecosystem.vercel.app",
+    "https://ackit.iotfiysolutions.com"
 ];
 
 app.use(cors({
@@ -46,7 +47,7 @@ app.use(cors({
 // Initialize Socket.io
 const io = new Server(server, {
     cors: {
-        origin: ["https://ackit.vercel.app", "http://localhost:5173", "http://localhost:3000",],
+        origin: ["https://ackit.vercel.app", "http://localhost:5173", "http://localhost:3000", "https://ackit.iotfiysolutions.com",],
         methods: ["GET", "POST"],
         credentials: true
     }
