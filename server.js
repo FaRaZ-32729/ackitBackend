@@ -29,6 +29,7 @@ const allowedOrigins = [
     "http://localhost:5173",
     "http://localhost:3000",
     "https://iotfiy-ecosystem.vercel.app",
+    "https://inara-suprasense.vercel.app",
     "https://ecosystem.iotfiysolutions.com",
     "https://ackit.iotfiysolutions.com"
 ];
