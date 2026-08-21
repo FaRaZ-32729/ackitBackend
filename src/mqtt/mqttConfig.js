@@ -293,7 +293,7 @@ async function handleDeviceStatusMessage(deviceId, payload) {
                 device.temperature != null ? device.temperature : null;
 
             if (remoteMode === "lock") {
-                // LOCKED: dashboard/DB is source of truth.
+                // LOCKED: dashboard/DB desired power (on/off) + temp is source of truth.
                 // Offline physical-remote drift must be discarded — push desired to ESP+AC.
                 publishDeviceRemoteMode(device.deviceId, {
                     remote: "lock",
@@ -312,6 +312,7 @@ async function handleDeviceStatusMessage(deviceId, payload) {
                             fresh.state === "on" || fresh.state === "off"
                                 ? fresh.state
                                 : "off";
+                        // Always force desired power (+ temp if ON) after lock reconnect
                         publishDeviceApplyCommand(fresh.deviceId, {
                             key:
                                 applyState === "on" ? "power.on" : "power.off",
@@ -324,7 +325,7 @@ async function handleDeviceStatusMessage(deviceId, payload) {
                             await fresh.save();
                         }
                         console.log(
-                            `[MQTT] lock reconnect apply for ${pendingDeviceId}: ${applyState} / ${fresh.temperature}`
+                            `[MQTT] lock reconnect apply power+temp for ${pendingDeviceId}: ${applyState} / ${fresh.temperature}`
                         );
                     } catch (err) {
                         console.error(
@@ -334,13 +335,16 @@ async function handleDeviceStatusMessage(deviceId, payload) {
                     }
                 }, 2500);
             } else {
-                // UNLOCK / SUPERLOCK: physical/offline remote changes are SoT.
-                // Sync mode only — do NOT push DB state/temp (would wipe ESP flash).
+                // UNLOCK / SUPERLOCK: offline physical power (on/off) + temp are SoT.
+                // Sync mode only — ESP will publish flash state; do NOT wipe with DB values.
                 publishDeviceRemoteMode(device.deviceId, {
                     remote: remoteMode,
                     state: null,
                     temperature: null,
                 });
+                console.log(
+                    `[MQTT] unlock reconnect for ${device.deviceId} — waiting for ESP physical power+temp sync`
+                );
 
                 // Dashboard changes while ESP was offline (pendingControl).
                 // Delay so ESP can first publish its flash state/temp.
