@@ -284,11 +284,15 @@ async function handleDeviceStatusMessage(deviceId, payload) {
                 publishBrandCommandsToDevice(device);
             }
 
-            // Sync lock mode only — ESP also reports last flash state/temp
+            // Sync lock mode + dashboard desired so ESP lock baseline matches Mongo
             publishDeviceRemoteMode(device.deviceId, {
                 remote: device.remote || "unlock",
-                state: null,
-                temperature: null,
+                state:
+                    device.state === "on" || device.state === "off"
+                        ? device.state
+                        : null,
+                temperature:
+                    device.temperature != null ? device.temperature : null,
             });
 
             // Dashboard changes while ESP was offline.
@@ -302,7 +306,10 @@ async function handleDeviceStatusMessage(deviceId, payload) {
                         const fresh = await Device.findById(pendingMongoId);
                         if (!fresh || !fresh.pendingControl) return;
 
-                        if (espStateSyncedAfterOnline.has(pendingDeviceId)) {
+                        if (
+                            espStateSyncedAfterOnline.has(pendingDeviceId) &&
+                            fresh.remote !== "lock"
+                        ) {
                             fresh.pendingControl = false;
                             await fresh.save();
                             console.log(
@@ -624,11 +631,54 @@ async function handleDeviceStateMessage(deviceId, payload) {
         if (nextState) updates.state = nextState;
         if (nextTemperature != null) updates.temperature = nextTemperature;
 
+        // While remote-locked, dashboard desired is source of truth.
+        // Reject physical-remote drift and re-push lock + apply to ESP.
+        if (
+            device.remote === "lock" &&
+            (nextState || nextTemperature != null)
+        ) {
+            const desiredState =
+                device.state === "on" || device.state === "off" ? device.state : null;
+            const desiredTemp =
+                typeof device.temperature === "number"
+                    ? device.temperature
+                    : null;
+            const stateDrift =
+                nextState && desiredState && nextState !== desiredState;
+            const tempDrift =
+                nextTemperature != null &&
+                desiredTemp != null &&
+                Number(nextTemperature) !== Number(desiredTemp);
+
+            if (stateDrift || tempDrift) {
+                console.warn(
+                    `[MQTT] locked device ${normalizedId} reported drift ` +
+                        `(got ${nextState || "-"}/${nextTemperature ?? "-"}, ` +
+                        `desired ${desiredState || "-"}/${desiredTemp ?? "-"}) — rejecting + re-applying`
+                );
+                publishDeviceRemoteMode(device.deviceId, {
+                    remote: "lock",
+                    state: desiredState,
+                    temperature: desiredTemp,
+                });
+                if (desiredState) {
+                    publishDeviceApplyCommand(device.deviceId, {
+                        key: desiredState === "on" ? "power.on" : "power.off",
+                        state: desiredState,
+                        temperature:
+                            desiredState === "on" ? desiredTemp : null,
+                    });
+                }
+                return;
+            }
+        }
+
         // Physical AC report from ESP (incl. after offline remote changes)
         if (nextState || nextTemperature != null) {
             espStateSyncedAfterOnline.set(normalizedId, true);
             // Device flash/remote is source of truth — drop stale dashboard pending
-            if (device.pendingControl) {
+            // (but never while locked — pending must still apply)
+            if (device.pendingControl && device.remote !== "lock") {
                 updates.pendingControl = false;
             }
         }
