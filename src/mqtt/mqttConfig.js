@@ -284,39 +284,29 @@ async function handleDeviceStatusMessage(deviceId, payload) {
                 publishBrandCommandsToDevice(device);
             }
 
-            // Sync lock mode + dashboard desired so ESP lock baseline matches Mongo
-            publishDeviceRemoteMode(device.deviceId, {
-                remote: device.remote || "unlock",
-                state:
-                    device.state === "on" || device.state === "off"
-                        ? device.state
-                        : null,
-                temperature:
-                    device.temperature != null ? device.temperature : null,
-            });
+            const remoteMode = device.remote || "unlock";
+            const desiredState =
+                device.state === "on" || device.state === "off"
+                    ? device.state
+                    : null;
+            const desiredTemp =
+                device.temperature != null ? device.temperature : null;
 
-            // Dashboard changes while ESP was offline.
-            // Delay so ESP can first publish its flash state/temp (physical remote
-            // changes while offline). If ESP already synced, drop pending.
-            if (device.pendingControl) {
+            if (remoteMode === "lock") {
+                // LOCKED: dashboard/DB is source of truth.
+                // Offline physical-remote drift must be discarded — push desired to ESP+AC.
+                publishDeviceRemoteMode(device.deviceId, {
+                    remote: "lock",
+                    state: desiredState,
+                    temperature: desiredTemp,
+                });
+
                 const pendingDeviceId = device.deviceId;
                 const pendingMongoId = String(device._id);
                 setTimeout(async () => {
                     try {
                         const fresh = await Device.findById(pendingMongoId);
-                        if (!fresh || !fresh.pendingControl) return;
-
-                        if (
-                            espStateSyncedAfterOnline.has(pendingDeviceId) &&
-                            fresh.remote !== "lock"
-                        ) {
-                            fresh.pendingControl = false;
-                            await fresh.save();
-                            console.log(
-                                `[MQTT] skipped pending control for ${pendingDeviceId} — ESP already reported physical state`
-                            );
-                            return;
-                        }
+                        if (!fresh || fresh.remote !== "lock") return;
 
                         const applyState =
                             fresh.state === "on" || fresh.state === "off"
@@ -329,20 +319,76 @@ async function handleDeviceStatusMessage(deviceId, payload) {
                             temperature:
                                 applyState === "on" ? fresh.temperature : null,
                         });
-                        fresh.pendingControl = false;
-                        await fresh.save();
+                        if (fresh.pendingControl) {
+                            fresh.pendingControl = false;
+                            await fresh.save();
+                        }
                         console.log(
-                            `[MQTT] applied pending control for ${pendingDeviceId}: ${applyState} / ${fresh.temperature}`
+                            `[MQTT] lock reconnect apply for ${pendingDeviceId}: ${applyState} / ${fresh.temperature}`
                         );
                     } catch (err) {
                         console.error(
-                            `[MQTT] pending control apply failed:`,
+                            `[MQTT] lock reconnect apply failed:`,
                             err.message
                         );
                     }
-                }, 3000);
+                }, 2500);
             } else {
-                // No pending dashboard command — trust ESP flash as source of truth
+                // UNLOCK / SUPERLOCK: physical/offline remote changes are SoT.
+                // Sync mode only — do NOT push DB state/temp (would wipe ESP flash).
+                publishDeviceRemoteMode(device.deviceId, {
+                    remote: remoteMode,
+                    state: null,
+                    temperature: null,
+                });
+
+                // Dashboard changes while ESP was offline (pendingControl).
+                // Delay so ESP can first publish its flash state/temp.
+                if (device.pendingControl) {
+                    const pendingDeviceId = device.deviceId;
+                    const pendingMongoId = String(device._id);
+                    setTimeout(async () => {
+                        try {
+                            const fresh = await Device.findById(pendingMongoId);
+                            if (!fresh || !fresh.pendingControl) return;
+
+                            if (espStateSyncedAfterOnline.has(pendingDeviceId)) {
+                                fresh.pendingControl = false;
+                                await fresh.save();
+                                console.log(
+                                    `[MQTT] skipped pending control for ${pendingDeviceId} — ESP already reported physical state`
+                                );
+                                return;
+                            }
+
+                            const applyState =
+                                fresh.state === "on" || fresh.state === "off"
+                                    ? fresh.state
+                                    : "off";
+                            publishDeviceApplyCommand(fresh.deviceId, {
+                                key:
+                                    applyState === "on"
+                                        ? "power.on"
+                                        : "power.off",
+                                state: applyState,
+                                temperature:
+                                    applyState === "on"
+                                        ? fresh.temperature
+                                        : null,
+                            });
+                            fresh.pendingControl = false;
+                            await fresh.save();
+                            console.log(
+                                `[MQTT] applied pending control for ${pendingDeviceId}: ${applyState} / ${fresh.temperature}`
+                            );
+                        } catch (err) {
+                            console.error(
+                                `[MQTT] pending control apply failed:`,
+                                err.message
+                            );
+                        }
+                    }, 3000);
+                }
             }
         }
     } catch (error) {
